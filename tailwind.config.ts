@@ -116,11 +116,13 @@ export default {
         function ({
             addBase,
         }: {
-            addBase: (options: Record<string, string>) => void;
+            addBase: (base: Record<string, any>) => void;
         }) {
             addBase({
-                "--color-quote": "#007691",
-                "--color-base": "#5c3ad4",
+                ":root": {
+                    "--color-quote": "#007691",
+                    "--color-base": "#5c3ad4",
+                },
             });
         },
     ],
