@@ -125,7 +125,7 @@ export function LiquidityChart({
     percentage = Math.max(0, Math.min(100, percentage));
     
     const newPrice = percentageToPrice(percentage);
-    const snappedPrice = findClosestBinPrice(newPrice);
+    const snappedPrice = newPrice;
     
     if (isDraggingCurrent) {
       onCurrentPriceChange(snappedPrice);
