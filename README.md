@@ -1,5 +1,7 @@
 # Meteora DLMM Position Simulator
 
+Try it live at https://geeklad.github.io/meteora-dlmm-position-simulator
+
 ![Meteora DLMM Position Simulator Animated Demo](public/dlmm-simulator-demo.webp)
 
 The Meteora DLMM Position Simulator is very simple to use.  Just fill in the 
