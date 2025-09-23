@@ -1,0 +1,44 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 226 29% 5%;
+    --foreground: 240 100% 98%;
+    --card: 226 29% 10%;
+    --card-foreground: 240 100% 98%;
+    --popover: 226 29% 5%;
+    --popover-foreground: 240 100% 98%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 226 29% 15%;
+    --secondary-foreground: 240 100% 98%;
+    --muted: 226 29% 15%;
+    --muted-foreground: 240 100% 80%;
+    --accent: 226 29% 15%;
+    --accent-foreground: 240 100% 98%;
+    --destructive: 0 63% 31%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 226 29% 15%;
+    --input: 226 29% 15%;
+    --ring: 217 91% 60%;
+    --chart-1: 12 76% 61%;
+    --chart-2: 173 58% 39%;
+    --chart-3: 197 37% 24%;
+    --chart-4: 43 74% 66%;
+    --chart-5: 27 87% 67%;
+    --radius: 0.5rem;
+  }
+
+  /* The app is designed to be dark only, so we remove the .dark class and apply dark theme variables to the root. */
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}

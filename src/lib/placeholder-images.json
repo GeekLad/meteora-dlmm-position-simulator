@@ -1,0 +1,10 @@
+{
+  "placeholderImages": [
+    {
+      "id": "dlmm-bg",
+      "description": "Abstract financial data background",
+      "imageUrl": "https://picsum.photos/seed/dlmm/1200/800",
+      "imageHint": "data finance"
+    }
+  ]
+}
