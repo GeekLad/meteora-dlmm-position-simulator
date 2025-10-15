@@ -117,16 +117,17 @@ export function LiquidityChart({
   }, [bins, params.binStep]);
 
 
-  const handleMouseMove = useCallback((e: MouseEvent) => {
+  // Use PointerEvent so touch + mouse both work
+  const handleMouseMove = useCallback((e: PointerEvent) => {
     if (!chartRef.current) return;
     const rect = chartRef.current.getBoundingClientRect();
     const x = e.clientX - rect.left;
     let percentage = (x / rect.width) * 100;
     percentage = Math.max(0, Math.min(100, percentage));
-    
+
     const newPrice = percentageToPrice(percentage);
     const snappedPrice = newPrice;
-    
+
     if (isDraggingCurrent) {
       onCurrentPriceChange(snappedPrice);
     }
@@ -141,16 +142,17 @@ export function LiquidityChart({
   }, []);
 
   useEffect(() => {
+    // Use pointer events so touch (mobile) works as well as mouse
     if (isDraggingCurrent || isDraggingInitial) {
-      document.addEventListener('mousemove', handleMouseMove);
-      document.addEventListener('mouseup', handleMouseUp);
+      document.addEventListener('pointermove', handleMouseMove as EventListener);
+      document.addEventListener('pointerup', handleMouseUp as EventListener);
     } else {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
+      document.removeEventListener('pointermove', handleMouseMove as EventListener);
+      document.removeEventListener('pointerup', handleMouseUp as EventListener);
     }
     return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
+      document.removeEventListener('pointermove', handleMouseMove as EventListener);
+      document.removeEventListener('pointerup', handleMouseUp as EventListener);
     };
   }, [isDraggingCurrent, isDraggingInitial, handleMouseMove, handleMouseUp]);
 
@@ -190,8 +192,8 @@ export function LiquidityChart({
           {/* Current Price Indicator */}
           <div
             className="absolute top-0 bottom-0 w-6 -translate-x-1/2 cursor-ew-resize"
-            style={{ left: `${currentPricePosition}%` }}
-            onMouseDown={(e) => { e.preventDefault(); setIsDraggingCurrent(true); }}
+            style={{ left: `${currentPricePosition}%`, touchAction: 'none' as const }}
+            onPointerDown={(e) => { e.preventDefault(); setIsDraggingCurrent(true); }}
           >
             <div className="absolute top-[-50px] left-1/2 -translate-x-1/2 px-2 py-1 bg-card text-foreground text-xs rounded-md shadow-lg whitespace-nowrap">
               Current Price
@@ -214,11 +216,11 @@ export function LiquidityChart({
         {/* Initial Price Slider */}
         <div className="relative h-8 mt-4 mb-2 w-full">
           <div className="absolute h-2 top-1/2 -translate-y-1/2 w-full bg-secondary rounded-full" />
-          <div 
-              className="absolute top-1/2 w-5 h-5 bg-primary rounded-full cursor-pointer border-2 border-background"
-              style={{left: `${initialPricePosition}%`, transform: 'translate(-50%, -50%)'}}
-              onMouseDown={(e) => { e.preventDefault(); setIsDraggingInitial(true); }}
-          />
+      <div 
+        className="absolute top-1/2 w-5 h-5 bg-primary rounded-full cursor-pointer border-2 border-background"
+        style={{left: `${initialPricePosition}%`, transform: 'translate(-50%, -50%)', touchAction: 'none' as const}}
+        onPointerDown={(e) => { e.preventDefault(); setIsDraggingInitial(true); }}
+      />
           <div className="absolute top-full text-center mt-1" style={{left: `${initialPricePosition}%`, transform: 'translateX(-50%)'}}>
               <span className="text-xs text-muted-foreground">Initial Price: <FormattedNumber value={initialPrice} maximumFractionDigits={4} /></span>
           </div>
