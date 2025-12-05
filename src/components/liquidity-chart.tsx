@@ -55,6 +55,8 @@ export function LiquidityChart({
   const [isDraggingInitial, setIsDraggingInitial] = useState(false);
   const [animationTrigger, setAnimationTrigger] = useState(0);
   const [isInitialAnimation, setIsInitialAnimation] = useState(false);
+  const [hoveredBin, setHoveredBin] = useState<SimulatedBin | null>(null);
+  const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
   const prevBinsRef = useRef<SimulatedBin[]>([]);
   
   // Detect when bins change to trigger animations
@@ -198,6 +200,7 @@ export function LiquidityChart({
 
   const currentPricePosition = priceToPercentage(currentPrice);
   const initialPricePosition = priceToPercentage(initialPrice);
+  const isPriceDifferent = Math.abs(currentPrice - initialPrice) > 1e-10;
 
   const numTicks = 6;
   const priceTicks = useMemo(() =>
@@ -238,8 +241,8 @@ export function LiquidityChart({
   }
 
   return (
-      <div className="flex flex-col h-full w-full justify-between">
-        <div className="relative w-full flex-grow" ref={chartRef}>
+        <div className="flex flex-col h-full w-full justify-between relative">
+          <div className="relative w-full flex-grow" ref={chartRef}>
           {/* Liquidity Bins */}
           <div className={`flex items-end h-full w-full ${gapClass}`}>
             {animatedBins.map((bin) => {
@@ -259,6 +262,26 @@ export function LiquidityChart({
                     opacity: hasValue ? 1 : 0.3,
                     willChange: animationTrigger > 0 ? 'height, background-color, filter' : 'auto',
                   }}
+                  onMouseEnter={(e) => {
+                    setHoveredBin(bin);
+                    if (chartRef.current) {
+                      const chartRect = chartRef.current.getBoundingClientRect();
+                      setTooltipPosition({
+                        x: e.clientX - chartRect.left,
+                        y: e.clientY - chartRect.top
+                      });
+                    }
+                  }}
+                  onMouseMove={(e) => {
+                    if (hoveredBin && chartRef.current) {
+                      const chartRect = chartRef.current.getBoundingClientRect();
+                      setTooltipPosition({
+                        x: e.clientX - chartRect.left,
+                        y: e.clientY - chartRect.top
+                      });
+                    }
+                  }}
+                  onMouseLeave={() => setHoveredBin(null)}
                 />
               );
             })}
@@ -279,7 +302,57 @@ export function LiquidityChart({
             <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-6 h-2 bg-primary rounded-t-sm shadow-lg"
                  style={{ boxShadow: '0 0 10px rgba(66, 153, 225, 0.5)' }} />
           </div>
-        </div>
+
+          {/* Reset Button - appears when current price differs from initial price */}
+          {isPriceDifferent && (
+            <button
+              onClick={() => onCurrentPriceChange(initialPrice)}
+              className="absolute top-2 right-2 px-3 py-1.5 bg-gradient-to-br from-primary/90 to-purple-500/90 hover:from-primary hover:to-purple-500 text-white text-xs rounded-md shadow-lg transition-all duration-200 hover:scale-105 hover:shadow-xl backdrop-blur-sm border border-white/20 font-medium"
+              title="Reset current price to initial price"
+            >
+              Reset Price
+            </button>
+          )}
+
+          {/* Bin Tooltip */}
+          {hoveredBin && (
+            <div
+              className="absolute pointer-events-none z-50 px-3 py-2 bg-gradient-to-br from-slate-900 to-slate-800 text-white text-xs rounded-lg shadow-2xl border border-primary/50 backdrop-blur-sm whitespace-nowrap"
+              style={{
+                left: `${tooltipPosition.x}px`,
+                top: `${tooltipPosition.y}px`,
+                transform: 'translate(-50%, calc(-100% - 12px))',
+              }}
+            >
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-300">Price:</span>
+                  <span className="font-bold text-blue-400">
+                    <FormattedNumber value={hoveredBin.price} maximumFractionDigits={6} />
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-300">Token:</span>
+                  <span className="font-semibold capitalize text-white">{hoveredBin.currentTokenType}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-300">Amount:</span>
+                  <span className="font-semibold text-white">
+                    <FormattedNumber value={hoveredBin.currentAmount} maximumFractionDigits={4} />
+                  </span>
+                </div>
+                {hoveredBin.currentValueInQuote > 0 && (
+                  <div className="flex items-center gap-2 pt-1 border-t border-slate-600">
+                    <span className="text-slate-300">Value:</span>
+                    <span className="font-semibold text-emerald-400">
+                      <FormattedNumber value={hoveredBin.currentValueInQuote} maximumFractionDigits={4} /> <span className="text-[10px] text-slate-400">Quote</span>
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          </div>
         
         {/* Price Axis */}
         <div className="relative w-full h-4 mt-2 mb-2">
@@ -311,7 +384,7 @@ export function LiquidityChart({
             </span>
           </div>
         </div>
-      </div>
+        </div>
   )
 }
 
