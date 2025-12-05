@@ -125,9 +125,19 @@ export function getInitialBins(params: SimulationParams): SimulatedBin[] {
 
   // Distribute Base
   if (baseAmount > 0 && baseBins.length > 0) {
+    if (strategy === 'spot') {
+      const constant = quoteBins.length > 0 ? quoteAmount / quoteBins.length : 0;
+      baseBins.forEach(bb => {
+        const binToUpdate = bins.find(b => b.id === bb.id)!;
+        const amount = constant / bb.price;
+        binToUpdate.initialTokenType = 'base';
+        binToUpdate.initialAmount = amount;
+        binToUpdate.initialValueInQuote = amount * bb.price;
+      });
+    } else {
       let totalValueWeight = 0;
       const totalValue = baseAmount * initialPrice;
-      
+
       const weights = baseBins.map(bb => {
           const dist = bb.id - initialPriceId;
           let weight: number;
@@ -139,7 +149,6 @@ export function getInitialBins(params: SimulationParams): SimulatedBin[] {
             case 'bid-ask':
               weight = dist;
               break;
-            case 'spot':
             default:
               weight = 1;
               break;
@@ -148,19 +157,20 @@ export function getInitialBins(params: SimulationParams): SimulatedBin[] {
           totalValueWeight += value;
           return { id: bb.id, weight, price: bb.price };
       });
-      
+
       if (totalValueWeight > 0) {
           weights.forEach(({ id, weight, price }) => {
               const binToUpdate = bins.find(b => b.id === id)!;
               // For base tokens, we distribute the total value, then find amount
               const targetValue = totalValue * (weight * price / totalValueWeight);
               const amount = targetValue / price;
-              
+
               binToUpdate.initialTokenType = 'base';
               binToUpdate.initialAmount = amount;
               binToUpdate.initialValueInQuote = targetValue;
           });
       }
+    }
   }
   
   
@@ -173,7 +183,7 @@ export function getInitialBins(params: SimulationParams): SimulatedBin[] {
     bins.forEach(bin => {
       if (bin.initialTokenType === 'base') {
         bin.initialAmount *= baseCorrectionFactor;
-        bin.initialValueInQuote = bin.initialAmount * initialPrice;
+        bin.initialValueInQuote = bin.initialAmount * bin.price;
       }
     });
   }

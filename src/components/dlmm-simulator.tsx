@@ -120,7 +120,7 @@ export function DlmmSimulator() {
 
   useEffect(() => {
     if (initialBins.length > 0 && typeof currentPrice === 'number' && simulationParams) {
-      const result = runSimulation(initialBins, currentPrice, simulationParams.initialPrice);
+      const result = runSimulation(initialBins, currentPrice, simulationParams.initialPrice, simulationParams.strategy);
       setSimulation(result);
     } else {
       setSimulation(null);
@@ -224,7 +224,18 @@ export function DlmmSimulator() {
     // If both are filled, recalculate base based on quote
     if (hasQuote && hasBase) {
       if (quoteBinsCount > 0 && baseBinsCount > 0) {
-        newParams.baseAmount = ((params.quoteAmount as number) * baseBinsCount) / (initialPrice * quoteBinsCount);
+        if (params.strategy === 'spot') {
+          let sumInvPrice = 0;
+          for (let id = minId; id <= maxId; id++) {
+            const price = getPriceFromId(id, binStep);
+            if (id > initialPriceId) {
+              sumInvPrice += 1 / price;
+            }
+          }
+          newParams.baseAmount = (params.quoteAmount as number) / quoteBinsCount * sumInvPrice;
+        } else {
+          newParams.baseAmount = ((params.quoteAmount as number) * baseBinsCount) / (initialPrice * quoteBinsCount);
+        }
       } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
         // Price below range - only base bins exist, zero out quote
         newParams.quoteAmount = 0;
@@ -240,7 +251,18 @@ export function DlmmSimulator() {
     // Only one is filled, calculate the other
     if (hasQuote && !hasBase) {
       if (quoteBinsCount > 0 && baseBinsCount > 0) {
-        newParams.baseAmount = ((params.quoteAmount as number) * baseBinsCount) / (initialPrice * quoteBinsCount);
+        if (params.strategy === 'spot') {
+          let sumInvPrice = 0;
+          for (let id = minId; id <= maxId; id++) {
+            const price = getPriceFromId(id, binStep);
+            if (id > initialPriceId) {
+              sumInvPrice += 1 / price;
+            }
+          }
+          newParams.baseAmount = (params.quoteAmount as number) / quoteBinsCount * sumInvPrice;
+        } else {
+          newParams.baseAmount = ((params.quoteAmount as number) * baseBinsCount) / (initialPrice * quoteBinsCount);
+        }
       } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
         // Price below range - only base bins exist, zero out quote
         newParams.quoteAmount = 0;
@@ -252,7 +274,18 @@ export function DlmmSimulator() {
       setParams(newParams);
     } else if (hasBase && !hasQuote) {
       if (quoteBinsCount > 0 && baseBinsCount > 0) {
-        newParams.quoteAmount = ((params.baseAmount as number) * initialPrice * quoteBinsCount) / baseBinsCount;
+        if (params.strategy === 'spot') {
+          let sumInvPrice = 0;
+          for (let id = minId; id <= maxId; id++) {
+            const price = getPriceFromId(id, binStep);
+            if (id > initialPriceId) {
+              sumInvPrice += 1 / price;
+            }
+          }
+          newParams.quoteAmount = (params.baseAmount as number) / sumInvPrice * quoteBinsCount;
+        } else {
+          newParams.quoteAmount = ((params.baseAmount as number) * initialPrice * quoteBinsCount) / baseBinsCount;
+        }
       } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
         // Price below range - only base bins exist, zero out quote
         newParams.quoteAmount = 0;
@@ -307,7 +340,18 @@ export function DlmmSimulator() {
       // Recalculate quote based on base
       if (typeof params.baseAmount === 'number') {
         if (quoteBinsCount > 0 && baseBinsCount > 0) {
-          newParams.quoteAmount = (params.baseAmount * initialPrice * quoteBinsCount) / baseBinsCount;
+          if (params.strategy === 'spot') {
+            let sumInvPrice = 0;
+            for (let id = minId; id <= maxId; id++) {
+              const price = getPriceFromId(id, binStep);
+              if (id > initialPriceId) {
+                sumInvPrice += 1 / price;
+              }
+            }
+            newParams.quoteAmount = params.baseAmount / sumInvPrice * quoteBinsCount;
+          } else {
+            newParams.quoteAmount = (params.baseAmount * initialPrice * quoteBinsCount) / baseBinsCount;
+          }
         } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
           // Price below range - only base bins exist, zero out quote
           newParams.quoteAmount = 0;
@@ -321,7 +365,18 @@ export function DlmmSimulator() {
       // Recalculate base based on quote
       if (typeof params.quoteAmount === 'number') {
         if (quoteBinsCount > 0 && baseBinsCount > 0) {
-          newParams.baseAmount = (params.quoteAmount * baseBinsCount) / (initialPrice * quoteBinsCount);
+          if (params.strategy === 'spot') {
+            let sumInvPrice = 0;
+            for (let id = minId; id <= maxId; id++) {
+              const price = getPriceFromId(id, binStep);
+              if (id > initialPriceId) {
+                sumInvPrice += 1 / price;
+              }
+            }
+            newParams.baseAmount = params.quoteAmount / quoteBinsCount * sumInvPrice;
+          } else {
+            newParams.baseAmount = (params.quoteAmount * baseBinsCount) / (initialPrice * quoteBinsCount);
+          }
         } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
           // Price below range - only base bins exist, zero out quote
           newParams.quoteAmount = 0;
@@ -409,7 +464,18 @@ export function DlmmSimulator() {
 
         if (field === 'baseAmount') {
           if (quoteBinsCount > 0 && baseBinsCount > 0) {
-            newParams.quoteAmount = (finalValue * initialPrice * quoteBinsCount) / baseBinsCount;
+            if (newParams.strategy === 'spot') {
+              let sumInvPrice = 0;
+              for (let id = minId; id <= maxId; id++) {
+                const price = getPriceFromId(id, binStep);
+                if (id > initialPriceId) {
+                  sumInvPrice += 1 / price;
+                }
+              }
+              newParams.quoteAmount = finalValue / sumInvPrice * quoteBinsCount;
+            } else {
+              newParams.quoteAmount = (finalValue * initialPrice * quoteBinsCount) / baseBinsCount;
+            }
           } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
             // Price below range - only base bins exist, zero out quote
             newParams.quoteAmount = 0;
@@ -420,7 +486,18 @@ export function DlmmSimulator() {
           setLastAutoFilledToken('quote');
         } else {
           if (quoteBinsCount > 0 && baseBinsCount > 0) {
-            newParams.baseAmount = (finalValue * baseBinsCount) / (initialPrice * quoteBinsCount);
+            if (newParams.strategy === 'spot') {
+              let sumInvPrice = 0;
+              for (let id = minId; id <= maxId; id++) {
+                const price = getPriceFromId(id, binStep);
+                if (id > initialPriceId) {
+                  sumInvPrice += 1 / price;
+                }
+              }
+              newParams.baseAmount = finalValue / quoteBinsCount * sumInvPrice;
+            } else {
+              newParams.baseAmount = (finalValue * baseBinsCount) / (initialPrice * quoteBinsCount);
+            }
           } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
             // Price below range - only base bins exist, zero out quote
             newParams.quoteAmount = 0;
@@ -497,8 +574,11 @@ export function DlmmSimulator() {
 
   const initialTotalValue = useMemo(() => {
     if (!initialBins || initialBins.length === 0) return 0;
+    if (params.strategy === 'spot') {
+      return initialBins.reduce((sum, bin) => sum + bin.displayValue, 0);
+    }
     return initialBins.reduce((sum, bin) => sum + bin.initialValueInQuote, 0);
-  }, [initialBins]);
+  }, [initialBins, params.strategy]);
   
   
   // Position Value Change
