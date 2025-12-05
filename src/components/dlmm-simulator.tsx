@@ -153,8 +153,27 @@ export function DlmmSimulator() {
     const maxId = getIdFromPrice(upperPrice, binStep);
     const initialPriceId = getIdFromPrice(initialPrice, binStep);
 
-    const quoteBins = Math.max(0, initialPriceId - minId);
-    const baseBins = Math.max(0, maxId - initialPriceId + 1);
+    // Handle edge cases where initial price is outside the range
+    let quoteBinsCount: number;
+    let baseBinsCount: number;
+
+    if (initialPriceId < minId) {
+      // Initial price is below range - all bins are base bins
+      quoteBinsCount = 0;
+      baseBinsCount = (maxId - minId) + 1;
+    } else if (initialPriceId > maxId) {
+      // Initial price is above range - all bins are quote bins
+      quoteBinsCount = (maxId - minId) + 1;
+      baseBinsCount = 0;
+    } else {
+      // Initial price is within range
+      // Quote bins: id <= initialPriceId (bins at or below initial price get quote)
+      // Base bins: id > initialPriceId (bins above initial price get base)
+      quoteBinsCount = (initialPriceId - minId) + 1;
+      baseBinsCount = maxId - initialPriceId;
+    }
+
+    const totalBins = quoteBinsCount + baseBinsCount;
 
     // Determine which token to calculate
     const hasQuote = typeof params.quoteAmount === 'number' && params.quoteAmount !== 0;
@@ -167,14 +186,27 @@ export function DlmmSimulator() {
 
     let newParams = { ...params };
 
+    // For a FLAT distribution where each bin has equal VALUE:
+    // Let V = value per bin
+    // Total quote value = V * quoteBinsCount
+    // Total base value = V * baseBinsCount
+    //
+    // We know: quoteAmount = V * quoteBinsCount
+    // And: baseAmount * initialPrice = V * baseBinsCount
+    //
+    // Therefore: quoteAmount / quoteBinsCount = (baseAmount * initialPrice) / baseBinsCount
+    // Solving: quoteAmount = (baseAmount * initialPrice * quoteBinsCount) / baseBinsCount
+
     // If both are filled, recalculate base based on quote
     if (hasQuote && hasBase) {
-      if (quoteBins > 0 && baseBins > 0) {
-        newParams.baseAmount = ((params.quoteAmount as number) * baseBins) / (initialPrice * quoteBins);
-      } else if (baseBins > 0) {
+      if (quoteBinsCount > 0 && baseBinsCount > 0) {
+        newParams.baseAmount = ((params.quoteAmount as number) * baseBinsCount) / (initialPrice * quoteBinsCount);
+      } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
+        // Price below range - only base bins exist, zero out quote
+        newParams.quoteAmount = 0;
+      } else if (quoteBinsCount > 0 && baseBinsCount === 0) {
+        // Price above range - only quote bins exist, zero out base
         newParams.baseAmount = 0;
-      } else {
-        newParams.baseAmount = (params.quoteAmount as number) / initialPrice;
       }
       setLastAutoFilledToken('base');
       setParams(newParams);
@@ -183,22 +215,26 @@ export function DlmmSimulator() {
 
     // Only one is filled, calculate the other
     if (hasQuote && !hasBase) {
-      if (quoteBins > 0 && baseBins > 0) {
-        newParams.baseAmount = ((params.quoteAmount as number) * baseBins) / (initialPrice * quoteBins);
-      } else if (baseBins > 0) {
+      if (quoteBinsCount > 0 && baseBinsCount > 0) {
+        newParams.baseAmount = ((params.quoteAmount as number) * baseBinsCount) / (initialPrice * quoteBinsCount);
+      } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
+        // Price below range - only base bins exist, zero out quote
+        newParams.quoteAmount = 0;
+      } else if (quoteBinsCount > 0 && baseBinsCount === 0) {
+        // Price above range - only quote bins exist, zero out base
         newParams.baseAmount = 0;
-      } else {
-        newParams.baseAmount = (params.quoteAmount as number) / initialPrice;
       }
       setLastAutoFilledToken('base');
       setParams(newParams);
     } else if (hasBase && !hasQuote) {
-      if (quoteBins > 0 && baseBins > 0) {
-        newParams.quoteAmount = ((params.baseAmount as number) * initialPrice * quoteBins) / baseBins;
-      } else if (quoteBins > 0) {
+      if (quoteBinsCount > 0 && baseBinsCount > 0) {
+        newParams.quoteAmount = ((params.baseAmount as number) * initialPrice * quoteBinsCount) / baseBinsCount;
+      } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
+        // Price below range - only base bins exist, zero out quote
         newParams.quoteAmount = 0;
-      } else {
-        newParams.quoteAmount = (params.baseAmount as number) * initialPrice;
+      } else if (quoteBinsCount > 0 && baseBinsCount === 0) {
+        // Price above range - only quote bins exist, zero out base
+        newParams.baseAmount = 0;
       }
       setLastAutoFilledToken('quote');
       setParams(newParams);
@@ -223,32 +259,51 @@ export function DlmmSimulator() {
     const maxId = getIdFromPrice(upperPrice, binStep);
     const initialPriceId = getIdFromPrice(initialPrice, binStep);
 
-    const quoteBins = Math.max(0, initialPriceId - minId);
-    const baseBins = Math.max(0, maxId - initialPriceId + 1);
+    // Handle edge cases where initial price is outside the range
+    let quoteBinsCount: number;
+    let baseBinsCount: number;
+
+    if (initialPriceId < minId) {
+      // Initial price is below range - all bins are base bins
+      quoteBinsCount = 0;
+      baseBinsCount = (maxId - minId) + 1;
+    } else if (initialPriceId > maxId) {
+      // Initial price is above range - all bins are quote bins
+      quoteBinsCount = (maxId - minId) + 1;
+      baseBinsCount = 0;
+    } else {
+      // Initial price is within range
+      quoteBinsCount = (initialPriceId - minId) + 1;
+      baseBinsCount = maxId - initialPriceId;
+    }
 
     let newParams = { ...params };
 
     if (lastAutoFilledToken === 'quote') {
       // Recalculate quote based on base
       if (typeof params.baseAmount === 'number') {
-        if (quoteBins > 0 && baseBins > 0) {
-          newParams.quoteAmount = (params.baseAmount * initialPrice * quoteBins) / baseBins;
-        } else if (quoteBins > 0) {
+        if (quoteBinsCount > 0 && baseBinsCount > 0) {
+          newParams.quoteAmount = (params.baseAmount * initialPrice * quoteBinsCount) / baseBinsCount;
+        } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
+          // Price below range - only base bins exist, zero out quote
           newParams.quoteAmount = 0;
-        } else {
-          newParams.quoteAmount = params.baseAmount * initialPrice;
+        } else if (quoteBinsCount > 0 && baseBinsCount === 0) {
+          // Price above range - only quote bins exist, zero out base
+          newParams.baseAmount = 0;
         }
         setParams(newParams);
       }
     } else if (lastAutoFilledToken === 'base') {
       // Recalculate base based on quote
       if (typeof params.quoteAmount === 'number') {
-        if (quoteBins > 0 && baseBins > 0) {
-          newParams.baseAmount = (params.quoteAmount * baseBins) / (initialPrice * quoteBins);
-        } else if (baseBins > 0) {
+        if (quoteBinsCount > 0 && baseBinsCount > 0) {
+          newParams.baseAmount = (params.quoteAmount * baseBinsCount) / (initialPrice * quoteBinsCount);
+        } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
+          // Price below range - only base bins exist, zero out quote
+          newParams.quoteAmount = 0;
+        } else if (quoteBinsCount > 0 && baseBinsCount === 0) {
+          // Price above range - only quote bins exist, zero out base
           newParams.baseAmount = 0;
-        } else {
-          newParams.baseAmount = params.quoteAmount / initialPrice;
         }
         setParams(newParams);
       }
@@ -263,7 +318,7 @@ export function DlmmSimulator() {
       setParams(prev => ({ ...prev, initialPrice: finalValue }));
       setCurrentPrice(finalValue);
     } else if (autoFill && (field === 'baseAmount' || field === 'quoteAmount')) {
-      // Auto-fill the other token amount for balanced position
+      // Auto-fill the other token amount for flat distribution
       const newParams = { ...params, [field]: finalValue };
 
       if (typeof finalValue === 'number' &&
@@ -282,27 +337,44 @@ export function DlmmSimulator() {
         const maxId = getIdFromPrice(upperPrice, binStep);
         const initialPriceId = getIdFromPrice(initialPrice, binStep);
 
-        const quoteBins = Math.max(0, initialPriceId - minId); // bins below initial price
-        const baseBins = Math.max(0, maxId - initialPriceId + 1); // bins at or above initial price
+        // Handle edge cases where initial price is outside the range
+        let quoteBinsCount: number;
+        let baseBinsCount: number;
 
-        // For balanced distribution: quoteAmount / quoteBins = (baseAmount * initialPrice) / baseBins
-        // This ensures each bin has equal value
+        if (initialPriceId < minId) {
+          // Initial price is below range - all bins are base bins
+          quoteBinsCount = 0;
+          baseBinsCount = (maxId - minId) + 1;
+        } else if (initialPriceId > maxId) {
+          // Initial price is above range - all bins are quote bins
+          quoteBinsCount = (maxId - minId) + 1;
+          baseBinsCount = 0;
+        } else {
+          // Initial price is within range
+          quoteBinsCount = (initialPriceId - minId) + 1;
+          baseBinsCount = maxId - initialPriceId;
+        }
+
         if (field === 'baseAmount') {
-          if (quoteBins > 0 && baseBins > 0) {
-            newParams.quoteAmount = (finalValue * initialPrice * quoteBins) / baseBins;
-          } else if (quoteBins > 0) {
+          if (quoteBinsCount > 0 && baseBinsCount > 0) {
+            newParams.quoteAmount = (finalValue * initialPrice * quoteBinsCount) / baseBinsCount;
+          } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
+            // Price below range - only base bins exist, zero out quote
             newParams.quoteAmount = 0;
-          } else {
-            newParams.quoteAmount = finalValue * initialPrice;
+          } else if (quoteBinsCount > 0 && baseBinsCount === 0) {
+            // Price above range - only quote bins exist, zero out base
+            newParams.baseAmount = 0;
           }
           setLastAutoFilledToken('quote');
         } else {
-          if (quoteBins > 0 && baseBins > 0) {
-            newParams.baseAmount = (finalValue * baseBins) / (initialPrice * quoteBins);
-          } else if (baseBins > 0) {
+          if (quoteBinsCount > 0 && baseBinsCount > 0) {
+            newParams.baseAmount = (finalValue * baseBinsCount) / (initialPrice * quoteBinsCount);
+          } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
+            // Price below range - only base bins exist, zero out quote
+            newParams.quoteAmount = 0;
+          } else if (quoteBinsCount > 0 && baseBinsCount === 0) {
+            // Price above range - only quote bins exist, zero out base
             newParams.baseAmount = 0;
-          } else {
-            newParams.baseAmount = finalValue / initialPrice;
           }
           setLastAutoFilledToken('base');
         }
@@ -329,6 +401,7 @@ export function DlmmSimulator() {
   
   const handleInitialPriceChange = (newInitialPrice: number) => {
     setParams(prev => ({...prev, initialPrice: newInitialPrice}));
+    setCurrentPrice(newInitialPrice);
   }
 
   const handleCurrentPriceChange = (newCurrentPrice: number) => {
@@ -414,7 +487,7 @@ export function DlmmSimulator() {
 
   // Impermanent Loss vs HODL
   const profitLoss = analysis ? analysis.totalValueInQuote - initialTotalValue : 0;
-  
+
   let plColorClass: string | undefined;
   if (analysis) {
     if (Math.abs(profitLoss) < 0.00000001) {
@@ -429,6 +502,54 @@ export function DlmmSimulator() {
   const isPristine = typeof currentPrice === 'number' && typeof params.initialPrice === 'number' && Math.abs(currentPrice - params.initialPrice) < 1e-9;
   const displayBase = isPristine && typeof params.baseAmount === 'number' ? params.baseAmount : analysis?.totalBase ?? 0;
   const displayQuote = isPristine && typeof params.quoteAmount === 'number' ? params.quoteAmount : analysis?.totalQuote ?? 0;
+
+  // Calculate average price paid based on conversions that occurred
+  const averagePricePaid = useMemo(() => {
+    if (!simulation?.simulatedBins || typeof currentPrice !== 'number' || typeof params.initialPrice !== 'number') {
+      return params.initialPrice ?? 0;
+    }
+
+    // If price hasn't moved, average price is just the initial price
+    if (Math.abs(currentPrice - params.initialPrice) < 1e-9) {
+      return params.initialPrice;
+    }
+
+    // Calculate weighted average of bin prices where conversions occurred
+    let totalConvertedValue = 0;
+    let totalConvertedAmount = 0;
+
+    simulation.simulatedBins.forEach(bin => {
+      // A bin has converted if its current type differs from initial type
+      if (bin.initialAmount > 0 && bin.currentTokenType !== bin.initialTokenType) {
+        // This bin underwent conversion at its bin price
+        totalConvertedValue += bin.initialValueInQuote;
+        totalConvertedAmount += bin.initialValueInQuote / bin.price;
+      }
+    });
+
+    // If no conversions occurred, return initial price
+    if (totalConvertedAmount === 0) {
+      return params.initialPrice;
+    }
+
+    // Weighted average price = total value / total amount converted
+    return totalConvertedValue / totalConvertedAmount;
+  }, [simulation, currentPrice, params.initialPrice]);
+
+  // Determine label for average price card based on price movement
+  const avgPriceLabel = useMemo(() => {
+    if (typeof currentPrice !== 'number' || typeof params.initialPrice !== 'number') {
+      return 'Initial Price';
+    }
+
+    if (Math.abs(currentPrice - params.initialPrice) < 1e-9) {
+      return 'Initial Price';
+    } else if (currentPrice < params.initialPrice) {
+      return 'Avg Price Paid';
+    } else {
+      return 'Avg Price Sold';
+    }
+  }, [currentPrice, params.initialPrice]);
 
 
   return (
@@ -593,6 +714,10 @@ export function DlmmSimulator() {
                    <div className="flex flex-col gap-1 p-3 bg-secondary rounded-lg">
                     <span className="text-muted-foreground">Quote Bins</span>
                     <span className="font-bold text-lg">{analysis.quoteBins}</span>
+                  </div>
+                  <div className="flex flex-col gap-1 p-3 bg-secondary rounded-lg">
+                    <span className="text-muted-foreground">{avgPriceLabel}</span>
+                    <span className="font-bold text-lg"><FormattedNumber value={averagePricePaid} maximumFractionDigits={4} /></span>
                   </div>
                 </div>
               ) : (

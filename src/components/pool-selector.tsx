@@ -134,7 +134,6 @@ export function PoolSelector({ onSelectPool, selectedPool }: PoolSelectorProps) 
               </span>
               {loadingStatus.isLoading && (
                 <>
-                  <span>Searching for more...</span>
                   <Loader2 className="h-3 w-3 animate-spin" />
                 </>
               )}
@@ -181,7 +180,7 @@ export function PoolSelector({ onSelectPool, selectedPool }: PoolSelectorProps) 
                   <div className="space-y-1">
                     <div className="font-semibold text-sm">{pair.name}</div>
                     <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                      <span>Bin: {pair.bin_step}</span>
+                      <span>Bin Step: {pair.bin_step}</span>
                       <span>TVL: {formatUSD(pair.liquidity)}</span>
                       <span>30m: {formatUSD(pair.volume.min_30 || 0)}</span>
                     </div>
