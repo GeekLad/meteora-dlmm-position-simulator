@@ -161,6 +161,9 @@ export function LiquidityChart({
     return <div className="flex items-center justify-center h-full text-muted-foreground">No liquidity data.</div>
   }
 
+  // Calculate gap size based on number of bins to prevent overflow
+  const gapClass = bins.length > 200 ? '' : bins.length > 100 ? 'gap-[0.5px]' : 'gap-px';
+
   const currentPricePosition = priceToPercentage(currentPrice);
   const initialPricePosition = priceToPercentage(initialPrice);
 
@@ -176,7 +179,7 @@ export function LiquidityChart({
       <div className="flex flex-col h-full w-full justify-between">
         <div className="relative w-full flex-grow" ref={chartRef}>
           {/* Liquidity Bins */}
-          <div className="flex items-end h-full gap-px w-full">
+          <div className={`flex items-end h-full w-full ${gapClass}`}>
             {binsToDisplay.map((bin) => (
                   <div
                     key={bin.id}
