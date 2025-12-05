@@ -88,6 +88,8 @@ export function DlmmSimulator() {
   const [tokenSymbols, setTokenSymbols] = useState<{ base: string; quote: string }>({ base: 'Base', quote: 'Quote' });
   const [autoFill, setAutoFill] = useState(false);
   const [lastAutoFilledToken, setLastAutoFilledToken] = useState<'base' | 'quote' | null>(null);
+  const [lowerPricePercentage, setLowerPricePercentage] = useState<number | ''>('');
+  const [upperPricePercentage, setUpperPricePercentage] = useState<number | ''>('');
 
   const simulationParams = useMemo(() => {
     const allParamsSet =
@@ -130,6 +132,28 @@ export function DlmmSimulator() {
         setCurrentPrice(params.initialPrice);
     }
   }, [params.initialPrice, currentPrice]);
+
+  // Update price percentages when prices or initial price change
+  useEffect(() => {
+    if (typeof params.initialPrice === 'number' && params.initialPrice > 0) {
+      if (typeof params.lowerPrice === 'number') {
+        const lowerPct = ((params.lowerPrice - params.initialPrice) / params.initialPrice) * 100;
+        setLowerPricePercentage(Number(lowerPct.toFixed(2)));
+      } else {
+        setLowerPricePercentage('');
+      }
+
+      if (typeof params.upperPrice === 'number') {
+        const upperPct = ((params.upperPrice - params.initialPrice) / params.initialPrice) * 100;
+        setUpperPricePercentage(Number(upperPct.toFixed(2)));
+      } else {
+        setUpperPricePercentage('');
+      }
+    } else {
+      setLowerPricePercentage('');
+      setUpperPricePercentage('');
+    }
+  }, [params.lowerPrice, params.upperPrice, params.initialPrice]);
 
   // Auto-fill when toggle is turned on
   useEffect(() => {
@@ -239,7 +263,7 @@ export function DlmmSimulator() {
       setLastAutoFilledToken('quote');
       setParams(newParams);
     }
-  }, [autoFill]);
+  }, [autoFill, params.lowerPrice, params.upperPrice, params.binStep]);
 
   // Recalculate auto-filled token when initial price changes
   useEffect(() => {
@@ -309,6 +333,34 @@ export function DlmmSimulator() {
       }
     }
   }, [params.initialPrice, autoFill, lastAutoFilledToken]);
+
+  const handlePricePercentageChange = (priceType: 'lower' | 'upper', value: string) => {
+    const numValue = parseFloat(value);
+    const finalValue = value === '' ? '' : numValue;
+
+    if (priceType === 'lower') {
+      setLowerPricePercentage(finalValue);
+    } else {
+      setUpperPricePercentage(finalValue);
+    }
+
+    // Calculate absolute price from percentage
+    if (typeof finalValue === 'number' && typeof params.initialPrice === 'number' && params.initialPrice > 0) {
+      const newPrice = params.initialPrice * (1 + finalValue / 100);
+      if (priceType === 'lower') {
+        handleParamChange('lowerPrice', newPrice.toString());
+      } else {
+        handleParamChange('upperPrice', newPrice.toString());
+      }
+    } else if (value === '') {
+      // Clear the price when percentage is cleared
+      if (priceType === 'lower') {
+        setParams(prev => ({ ...prev, lowerPrice: '' }));
+      } else {
+        setParams(prev => ({ ...prev, upperPrice: '' }));
+      }
+    }
+  };
 
   const handleParamChange = (field: keyof PartialSimulationParams, value: string) => {
     const numValue = parseFloat(value);
@@ -397,6 +449,8 @@ export function DlmmSimulator() {
     setSimulation(null);
     setSelectedPool(null);
     setTokenSymbols({ base: 'Base', quote: 'Quote' });
+    setLowerPricePercentage('');
+    setUpperPricePercentage('');
   };
   
   const handleInitialPriceChange = (newInitialPrice: number) => {
@@ -633,13 +687,57 @@ export function DlmmSimulator() {
                 </RadioGroup>
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="lowerPrice" className="flex items-center gap-1.5 text-sm font-medium">
+                <Label className="flex items-center gap-1.5 text-sm font-medium">
                   <ChevronsLeftRight className="w-4 h-4 text-primary" />
                   Price Range
                 </Label>
-                <div className="flex gap-2">
-                  <Input id="lowerPrice" type="number" placeholder="Min" value={params.lowerPrice} onChange={e => handleParamChange('lowerPrice', e.target.value)} step="0.000001" className="transition-all duration-300 focus:ring-2 focus:ring-primary/50" />
-                  <Input id="upperPrice" type="number" placeholder="Max" value={params.upperPrice} onChange={e => handleParamChange('upperPrice', e.target.value)} step="0.000001" className="transition-all duration-300 focus:ring-2 focus:ring-primary/50" />
+                <div className="grid gap-2">
+                  <div className="flex gap-2">
+                    <Input
+                      id="lowerPrice"
+                      type="number"
+                      placeholder="Min Price"
+                      value={params.lowerPrice}
+                      onChange={e => handleParamChange('lowerPrice', e.target.value)}
+                      step="0.000001"
+                      className="flex-1 transition-all duration-300 focus:ring-2 focus:ring-primary/50"
+                    />
+                    <div className="relative w-24">
+                      <Input
+                        id="lowerPricePercentage"
+                        type="number"
+                        value={lowerPricePercentage}
+                        onChange={e => handlePricePercentageChange('lower', e.target.value)}
+                        placeholder="%"
+                        step="0.01"
+                        className="pr-6 transition-all duration-300 focus:ring-2 focus:ring-primary/50"
+                      />
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm pointer-events-none">%</span>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <Input
+                      id="upperPrice"
+                      type="number"
+                      placeholder="Max Price"
+                      value={params.upperPrice}
+                      onChange={e => handleParamChange('upperPrice', e.target.value)}
+                      step="0.000001"
+                      className="flex-1 transition-all duration-300 focus:ring-2 focus:ring-primary/50"
+                    />
+                    <div className="relative w-24">
+                      <Input
+                        id="upperPricePercentage"
+                        type="number"
+                        value={upperPricePercentage}
+                        onChange={e => handlePricePercentageChange('upper', e.target.value)}
+                        placeholder="%"
+                        step="0.01"
+                        className="pr-6 transition-all duration-300 focus:ring-2 focus:ring-primary/50"
+                      />
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm pointer-events-none">%</span>
+                    </div>
+                  </div>
                 </div>
               </div>
               <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50 border border-border/50">
