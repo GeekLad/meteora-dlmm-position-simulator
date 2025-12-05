@@ -506,7 +506,7 @@ export function DlmmSimulator() {
   // Calculate average price paid based on conversions that occurred
   const averagePricePaid = useMemo(() => {
     if (!simulation?.simulatedBins || typeof currentPrice !== 'number' || typeof params.initialPrice !== 'number') {
-      return params.initialPrice ?? 0;
+      return typeof params.initialPrice === 'number' ? params.initialPrice : 0;
     }
 
     // If price hasn't moved, average price is just the initial price
@@ -555,106 +555,135 @@ export function DlmmSimulator() {
   return (
     <DlmmContext.Provider value={{params}}>
     <div className="flex flex-col gap-8">
-      <header className="flex items-center justify-between">
+      <header className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-6 rounded-2xl bg-gradient-to-r from-primary/10 via-purple-500/10 to-primary/10 border border-primary/20 backdrop-blur-sm">
         <div className="flex items-center gap-3">
-          <Logo className="h-10 w-10 text-primary" />
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">Meteora DLMM Position Simulator</h1>
+          <div className="p-2 rounded-xl bg-primary/20 backdrop-blur-sm">
+            <Logo className="h-8 w-8 text-primary" />
+          </div>
+          <div>
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight bg-gradient-to-r from-primary via-purple-400 to-primary bg-clip-text text-transparent">Meteora DLMM Position Simulator</h1>
+            <p className="text-sm text-muted-foreground mt-1">Visualize and analyze your liquidity positions</p>
+          </div>
         </div>
-        <Button variant="outline" size="sm" onClick={handleClear}><RefreshCcw className="mr-2 h-4 w-4" />Clear All</Button>
+        <Button variant="outline" size="sm" onClick={handleClear} className="hover:bg-primary/10 transition-all duration-300">
+          <RefreshCcw className="mr-2 h-4 w-4" />Clear All
+        </Button>
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-1 flex flex-col gap-6">
-          <Card>
+          <Card className="border-primary/20 bg-card/50 backdrop-blur-sm hover:border-primary/40 transition-all duration-300">
             <CardHeader>
-              <CardTitle className="flex items-center gap-2">Search for a Pool</CardTitle>
-              <CardDescription>Search and select a Meteora DLMM pool to simulate, or manually enter the the position information below.</CardDescription>
+              <CardTitle className="flex items-center gap-2 text-lg">Search for a Pool</CardTitle>
+              <CardDescription>Search and select a Meteora DLMM pool to simulate, or manually enter the position information below.</CardDescription>
             </CardHeader>
             <CardContent>
               <PoolSelector onSelectPool={handlePoolSelect} selectedPool={selectedPool} />
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className="border-primary/20 bg-card/50 backdrop-blur-sm hover:border-primary/40 transition-all duration-300">
             <CardHeader>
-              <CardTitle className="flex items-center gap-2"><Layers />Pool Parameters</CardTitle>
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <div className="p-2 rounded-lg bg-primary/10">
+                  <Layers className="h-4 w-4 text-primary" />
+                </div>
+                Pool Parameters
+              </CardTitle>
             </CardHeader>
             <CardContent className="grid gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="binStep" className="flex items-center gap-1.5"><Footprints className="w-4 h-4" />Bin Step</Label>
-                <Input id="binStep" type="number" value={params.binStep} onChange={e => handleParamChange('binStep', e.target.value)} />
+                <Label htmlFor="binStep" className="flex items-center gap-1.5 text-sm font-medium">
+                  <Footprints className="w-4 h-4 text-primary" />
+                  Bin Step
+                </Label>
+                <Input id="binStep" type="number" value={params.binStep} onChange={e => handleParamChange('binStep', e.target.value)} className="transition-all duration-300 focus:ring-2 focus:ring-primary/50" />
               </div>
             </CardContent>
           </Card>
-          
-          <Card>
+
+          <Card className="border-primary/20 bg-card/50 backdrop-blur-sm hover:border-primary/40 transition-all duration-300">
             <CardHeader>
-              <CardTitle className="flex items-center gap-2"><Coins />Liquidity Position</CardTitle>
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <div className="p-2 rounded-lg bg-primary/10">
+                  <Coins className="h-4 w-4 text-primary" />
+                </div>
+                Liquidity Position
+              </CardTitle>
             </CardHeader>
             <CardContent className="grid gap-4">
               <div className="grid gap-2">
-                <Label className="flex items-center gap-1.5"><MoveHorizontal className="w-4 h-4" />Strategy</Label>
+                <Label className="flex items-center gap-1.5 text-sm font-medium">
+                  <MoveHorizontal className="w-4 h-4 text-primary" />
+                  Strategy
+                </Label>
                 <RadioGroup value={params.strategy} onValueChange={handleStrategyChange} className="flex gap-4">
                   <div className="flex items-center space-x-2">
                     <RadioGroupItem value="spot" id="spot" />
-                    <Label htmlFor="spot">Spot</Label>
+                    <Label htmlFor="spot" className="cursor-pointer">Spot</Label>
                   </div>
                   <div className="flex items-center space-x-2">
                     <RadioGroupItem value="bid-ask" id="bid-ask" />
-                    <Label htmlFor="bid-ask">Bid-Ask</Label>
+                    <Label htmlFor="bid-ask" className="cursor-pointer">Bid-Ask</Label>
                   </div>
-                   <div className="flex items-center space-x-2">
+                  <div className="flex items-center space-x-2">
                     <RadioGroupItem value="curve" id="curve" />
-                    <Label htmlFor="curve">Curve</Label>
+                    <Label htmlFor="curve" className="cursor-pointer">Curve</Label>
                   </div>
                 </RadioGroup>
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="lowerPrice" className="flex items-center gap-1.5"><ChevronsLeftRight className="w-4 h-4" />Price Range</Label>
+                <Label htmlFor="lowerPrice" className="flex items-center gap-1.5 text-sm font-medium">
+                  <ChevronsLeftRight className="w-4 h-4 text-primary" />
+                  Price Range
+                </Label>
                 <div className="flex gap-2">
-                  <Input id="lowerPrice" type="number" placeholder="Min" value={params.lowerPrice} onChange={e => handleParamChange('lowerPrice', e.target.value)} step="0.000001" />
-                  <Input id="upperPrice" type="number" placeholder="Max" value={params.upperPrice} onChange={e => handleParamChange('upperPrice', e.target.value)} step="0.000001" />
+                  <Input id="lowerPrice" type="number" placeholder="Min" value={params.lowerPrice} onChange={e => handleParamChange('lowerPrice', e.target.value)} step="0.000001" className="transition-all duration-300 focus:ring-2 focus:ring-primary/50" />
+                  <Input id="upperPrice" type="number" placeholder="Max" value={params.upperPrice} onChange={e => handleParamChange('upperPrice', e.target.value)} step="0.000001" className="transition-all duration-300 focus:ring-2 focus:ring-primary/50" />
                 </div>
               </div>
-              <div className="flex items-center justify-between">
-                <Label htmlFor="autoFill">Auto-Fill</Label>
+              <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50 border border-border/50">
+                <Label htmlFor="autoFill" className="text-sm font-medium cursor-pointer">Auto-Fill</Label>
                 <Switch id="autoFill" checked={autoFill} onCheckedChange={setAutoFill} />
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="baseAmount">{tokenSymbols.base} Token Amount</Label>
-                <Input id="baseAmount" type="number" value={params.baseAmount} onChange={e => handleParamChange('baseAmount', e.target.value)} />
+                <Label htmlFor="baseAmount" className="text-sm font-medium">{tokenSymbols.base} Token Amount</Label>
+                <Input id="baseAmount" type="number" value={params.baseAmount} onChange={e => handleParamChange('baseAmount', e.target.value)} className="transition-all duration-300 focus:ring-2 focus:ring-primary/50" />
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="quoteAmount">{tokenSymbols.quote} Token Amount</Label>
-                <Input id="quoteAmount" type="number" value={params.quoteAmount} onChange={e => handleParamChange('quoteAmount', e.target.value)} />
+                <Label htmlFor="quoteAmount" className="text-sm font-medium">{tokenSymbols.quote} Token Amount</Label>
+                <Input id="quoteAmount" type="number" value={params.quoteAmount} onChange={e => handleParamChange('quoteAmount', e.target.value)} className="transition-all duration-300 focus:ring-2 focus:ring-primary/50" />
               </div>
-               <div className="grid gap-2">
-                  <Label htmlFor="initialPrice">Initial Price</Label>
-                  <Input 
-                      id="initialPrice"
-                      type="number" 
-                      value={params.initialPrice} 
-                      onChange={e => handleParamChange('initialPrice', e.target.value)}
-                      step="0.000001"
-                  />
+              <div className="grid gap-2">
+                <Label htmlFor="initialPrice" className="text-sm font-medium">Initial Price</Label>
+                <Input
+                  id="initialPrice"
+                  type="number"
+                  value={params.initialPrice}
+                  onChange={e => handleParamChange('initialPrice', e.target.value)}
+                  step="0.000001"
+                  className="transition-all duration-300 focus:ring-2 focus:ring-primary/50"
+                />
               </div>
             </CardContent>
           </Card>
         </div>
 
         <div className="lg:col-span-2 flex flex-col gap-6">
-          <Card className="flex-grow flex flex-col">
+          <Card className="flex-grow flex flex-col border-primary/20 bg-card/50 backdrop-blur-sm hover:border-primary/40 transition-all duration-300">
             <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <CandlestickChart />
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <div className="p-2 rounded-lg bg-primary/10">
+                  <CandlestickChart className="h-4 w-4 text-primary" />
+                </div>
                 {selectedPool && params.binStep ? `Liquidity Distribution for ${selectedPool.name} ${params.binStep} Bin Step` : 'Liquidity Distribution'}
               </CardTitle>
             </CardHeader>
             <CardContent className="flex-grow flex flex-col justify-center gap-4 pt-8">
               <div className="h-80 w-full">
                 {simulationParams && typeof currentPrice === 'number' && typeof params.initialPrice === 'number' && typeof params.lowerPrice === 'number' && typeof params.upperPrice === 'number' ? (
-                  <LiquidityChart 
-                    bins={initialBins} 
+                  <LiquidityChart
+                    bins={initialBins}
                     simulatedBins={simulation?.simulatedBins ?? []}
                     currentPrice={currentPrice}
                     initialPrice={params.initialPrice}
@@ -668,56 +697,56 @@ export function DlmmSimulator() {
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className="border-primary/20 bg-card/50 backdrop-blur-sm hover:border-primary/40 transition-all duration-300">
             <CardHeader>
-              <CardTitle>Position Analysis</CardTitle>
+              <CardTitle className="text-lg">Position Analysis</CardTitle>
             </CardHeader>
             <CardContent>
               {analysis ? (
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                   <div className="flex flex-col gap-1 p-3 bg-secondary rounded-lg">
-                    <span className="text-muted-foreground">Initial Position Value</span>
-                    <span className="font-bold text-lg"><FormattedNumber value={initialTotalValue} maximumFractionDigits={4} /></span>
+                  <div className="metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm">
+                    <span className="text-muted-foreground text-xs uppercase tracking-wide">Initial Position Value</span>
+                    <span className="font-bold text-xl mt-1"><FormattedNumber value={initialTotalValue} maximumFractionDigits={4} /></span>
                   </div>
-                  <div className="flex flex-col gap-1 p-3 bg-secondary rounded-lg">
-                    <span className="text-muted-foreground">Current Position Value</span>
-                    <span className="font-bold text-lg"><FormattedNumber value={analysis.totalValueInQuote} maximumFractionDigits={4} /></span>
+                  <div className="metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm">
+                    <span className="text-muted-foreground text-xs uppercase tracking-wide">Current Position Value</span>
+                    <span className="font-bold text-xl mt-1"><FormattedNumber value={analysis.totalValueInQuote} maximumFractionDigits={4} /></span>
                   </div>
-                  <div className={`flex flex-col gap-1 p-3 bg-secondary rounded-lg ${valueChangeColorClass}`}>
-                    <span className="text-muted-foreground">Position Value Change</span>
-                    <span className="font-bold text-lg">{valueChangeDisplay}</span>
+                  <div className={`metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm ${valueChangeColorClass}`}>
+                    <span className="text-muted-foreground text-xs uppercase tracking-wide">Position Value Change</span>
+                    <span className="font-bold text-xl mt-1">{valueChangeDisplay}</span>
                   </div>
-                  <div className={`flex flex-col gap-1 p-3 bg-secondary rounded-lg ${plColorClass}`}>
-                    <span className="text-muted-foreground">Profit/Loss</span>
-                    <span className="font-bold text-lg"><FormattedNumber value={profitLoss} maximumFractionDigits={4} /></span>
+                  <div className={`metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm ${plColorClass}`}>
+                    <span className="text-muted-foreground text-xs uppercase tracking-wide">Profit/Loss</span>
+                    <span className="font-bold text-xl mt-1"><FormattedNumber value={profitLoss} maximumFractionDigits={4} /></span>
                   </div>
-                  <div className={`flex flex-col gap-1 p-3 bg-secondary rounded-lg ${priceChangeColorClass}`}>
-                    <span className="text-muted-foreground">Price Pct. Change</span>
-                    <span className="font-bold text-lg">{priceChangeDisplay}</span>
+                  <div className={`metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm ${priceChangeColorClass}`}>
+                    <span className="text-muted-foreground text-xs uppercase tracking-wide">Price Pct. Change</span>
+                    <span className="font-bold text-xl mt-1">{priceChangeDisplay}</span>
                   </div>
-                   <div className="flex flex-col gap-1 p-3 bg-secondary rounded-lg">
-                    <span className="text-muted-foreground">{tokenSymbols.base} Tokens</span>
-                    <span className="font-bold text-lg"><FormattedNumber value={displayBase} maximumFractionDigits={4} /></span>
+                  <div className="metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm">
+                    <span className="text-muted-foreground text-xs uppercase tracking-wide">{tokenSymbols.base} Tokens</span>
+                    <span className="font-bold text-xl mt-1"><FormattedNumber value={displayBase} maximumFractionDigits={4} /></span>
                   </div>
-                   <div className="flex flex-col gap-1 p-3 bg-secondary rounded-lg">
-                    <span className="text-muted-foreground">{tokenSymbols.quote} Tokens</span>
-                    <span className="font-bold text-lg"><FormattedNumber value={displayQuote} maximumFractionDigits={4} /></span>
+                  <div className="metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm">
+                    <span className="text-muted-foreground text-xs uppercase tracking-wide">{tokenSymbols.quote} Tokens</span>
+                    <span className="font-bold text-xl mt-1"><FormattedNumber value={displayQuote} maximumFractionDigits={4} /></span>
                   </div>
-                  <div className="flex flex-col gap-1 p-3 bg-secondary rounded-lg">
-                    <span className="text-muted-foreground">Total Bins</span>
-                    <span className="font-bold text-lg">{analysis.totalBins}</span>
+                  <div className="metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm">
+                    <span className="text-muted-foreground text-xs uppercase tracking-wide">Total Bins</span>
+                    <span className="font-bold text-xl mt-1">{analysis.totalBins}</span>
                   </div>
-                  <div className="flex flex-col gap-1 p-3 bg-secondary rounded-lg">
-                    <span className="text-muted-foreground">Base Bins</span>
-                    <span className="font-bold text-lg">{analysis.baseBins}</span>
+                  <div className="metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm">
+                    <span className="text-muted-foreground text-xs uppercase tracking-wide">Base Bins</span>
+                    <span className="font-bold text-xl mt-1">{analysis.baseBins}</span>
                   </div>
-                   <div className="flex flex-col gap-1 p-3 bg-secondary rounded-lg">
-                    <span className="text-muted-foreground">Quote Bins</span>
-                    <span className="font-bold text-lg">{analysis.quoteBins}</span>
+                  <div className="metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm">
+                    <span className="text-muted-foreground text-xs uppercase tracking-wide">Quote Bins</span>
+                    <span className="font-bold text-xl mt-1">{analysis.quoteBins}</span>
                   </div>
-                  <div className="flex flex-col gap-1 p-3 bg-secondary rounded-lg">
-                    <span className="text-muted-foreground">{avgPriceLabel}</span>
-                    <span className="font-bold text-lg"><FormattedNumber value={averagePricePaid} maximumFractionDigits={4} /></span>
+                  <div className="metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm">
+                    <span className="text-muted-foreground text-xs uppercase tracking-wide">{avgPriceLabel}</span>
+                    <span className="font-bold text-xl mt-1"><FormattedNumber value={averagePricePaid} maximumFractionDigits={4} /></span>
                   </div>
                 </div>
               ) : (
