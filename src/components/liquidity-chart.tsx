@@ -243,7 +243,6 @@ export function LiquidityChart({
           {/* Liquidity Bins */}
           <div className={`flex items-end h-full w-full ${gapClass}`}>
             {animatedBins.map((bin) => {
-              const isNearCurrentPrice = Math.abs(bin.price - currentPrice) / currentPrice < 0.05;
               const baseColor = bin.currentTokenType === 'base' ? 'var(--color-base)' : 'var(--color-quote)';
               const hasValue = bin.displayValue > 0;
 
@@ -258,10 +257,6 @@ export function LiquidityChart({
                     animationDelay: isInitialAnimation ? `${bin.animationDelay}ms` : undefined,
                     transformOrigin: 'bottom',
                     opacity: hasValue ? 1 : 0.3,
-                    filter: isNearCurrentPrice ? 'brightness(1.3)' : 'brightness(1)',
-                    boxShadow: isNearCurrentPrice && hasValue
-                      ? `0 0 8px ${bin.currentTokenType === 'base' ? 'rgba(92, 58, 212, 0.6)' : 'rgba(0, 118, 145, 0.6)'}`
-                      : 'none',
                     willChange: animationTrigger > 0 ? 'height, background-color, filter' : 'auto',
                   }}
                 />

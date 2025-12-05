@@ -20,6 +20,7 @@ export function PoolSelector({ onSelectPool, selectedPool }: PoolSelectorProps) 
   const [allPairs, setAllPairs] = useState<MeteoraPair[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
+  const [binStepFilter, setBinStepFilter] = useState<string>('all');
   const [loadingStatus, setLoadingStatus] = useState<LoadingStatus>({
     isLoading: true,
     pairsLoaded: 0,
@@ -93,14 +94,22 @@ export function PoolSelector({ onSelectPool, selectedPool }: PoolSelectorProps) 
     };
   }, []);
 
-  // Filter pairs based on debounced search term
+  // Filter pairs based on debounced search term and bin step
   const filteredPairs = useMemo(() => {
     // Only show results if user has typed something
     if (!debouncedSearchTerm || debouncedSearchTerm.trim() === '') {
       return [];
     }
-    return filterPairs(allPairs, debouncedSearchTerm);
-  }, [allPairs, debouncedSearchTerm]);
+    let pairs = filterPairs(allPairs, debouncedSearchTerm);
+
+    // Apply bin step filter if not 'all'
+    if (binStepFilter !== 'all') {
+      const binStepNum = parseInt(binStepFilter, 10);
+      pairs = pairs.filter(pair => pair.bin_step === binStepNum);
+    }
+
+    return pairs;
+  }, [allPairs, debouncedSearchTerm, binStepFilter]);
 
   return (
     <div className="space-y-4">
@@ -111,15 +120,24 @@ export function PoolSelector({ onSelectPool, selectedPool }: PoolSelectorProps) 
         </div>
       )}
 
-      {/* Search input */}
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+      {/* Search input and bin step filter */}
+      <div className="flex gap-2">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            type="text"
+            placeholder="Search by token symbol, mint address, or pool address..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="pl-10"
+          />
+        </div>
         <Input
-          type="text"
-          placeholder="Search by token symbol, mint address, or pool address..."
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          className="pl-10"
+          type="number"
+          placeholder="Bin Step"
+          value={binStepFilter === 'all' ? '' : binStepFilter}
+          onChange={(e) => setBinStepFilter(e.target.value === '' ? 'all' : e.target.value)}
+          className="w-32"
         />
       </div>
 
@@ -182,7 +200,7 @@ export function PoolSelector({ onSelectPool, selectedPool }: PoolSelectorProps) 
                     <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
                       <span>Bin Step: {pair.bin_step}</span>
                       <span>TVL: {formatUSD(pair.liquidity)}</span>
-                      <span>30m: {formatUSD(pair.volume.min_30 || 0)}</span>
+                      <span>30m Vol: {formatUSD(pair.volume.min_30 || 0)}</span>
                     </div>
                   </div>
                 </button>
