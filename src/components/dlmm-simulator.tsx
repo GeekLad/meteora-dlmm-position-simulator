@@ -5,13 +5,16 @@ import { useState, useMemo, useEffect, createContext, useContext } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import { getInitialBins, runSimulation, type SimulationParams, type Analysis, type SimulatedBin, type Strategy } from "@/lib/dlmm";
+import { getInitialBins, runSimulation, getIdFromPrice, getPriceFromId, type SimulationParams, type Analysis, type SimulatedBin, type Strategy } from "@/lib/dlmm";
 import { LiquidityChart } from "@/components/liquidity-chart";
 import { Logo } from "@/components/icons";
 import { Layers, CandlestickChart, Coins, ChevronsLeftRight, Footprints, RefreshCcw, MoveHorizontal } from "lucide-react";
-import { formatNumber, formatPrice } from "@/lib/utils";
+import { formatNumber } from "@/lib/utils";
 import { RadioGroup, RadioGroupItem } from "./ui/radio-group";
 import { Button } from "./ui/button";
+import { Switch } from "./ui/switch";
+import { PoolSelector } from "@/components/pool-selector";
+import { MeteoraPair, parseTokenSymbols } from "@/lib/meteora-api";
 
 type PartialSimulationParams = Omit<SimulationParams, 'strategy' | 'binStep' | 'initialPrice' | 'baseAmount' | 'quoteAmount' | 'lowerPrice' | 'upperPrice'> & {
   strategy: Strategy;
@@ -30,7 +33,7 @@ const defaultParams: PartialSimulationParams = {
   quoteAmount: '',
   lowerPrice: '',
   upperPrice: '',
-  strategy: 'bid-ask',
+  strategy: 'spot',
 };
 
 type DlmmContextType = {
@@ -81,6 +84,10 @@ export function DlmmSimulator() {
   const [currentPrice, setCurrentPrice] = useState<number | ''>(defaultParams.initialPrice);
   const [initialBins, setInitialBins] = useState<SimulatedBin[]>([]);
   const [simulation, setSimulation] = useState<{ simulatedBins: SimulatedBin[], analysis: Analysis } | null>(null);
+  const [selectedPool, setSelectedPool] = useState<MeteoraPair | null>(null);
+  const [tokenSymbols, setTokenSymbols] = useState<{ base: string; quote: string }>({ base: 'Base', quote: 'Quote' });
+  const [autoFill, setAutoFill] = useState(false);
+  const [lastAutoFilledToken, setLastAutoFilledToken] = useState<'base' | 'quote' | null>(null);
 
   const simulationParams = useMemo(() => {
     const allParamsSet =
@@ -124,6 +131,129 @@ export function DlmmSimulator() {
     }
   }, [params.initialPrice, currentPrice]);
 
+  // Auto-fill when toggle is turned on
+  useEffect(() => {
+    if (!autoFill) return;
+
+    // Check if we have the necessary params for calculation
+    if (typeof params.initialPrice !== 'number' ||
+        typeof params.lowerPrice !== 'number' ||
+        typeof params.upperPrice !== 'number' ||
+        typeof params.binStep !== 'number') {
+      return;
+    }
+
+    const initialPrice = params.initialPrice;
+    const lowerPrice = params.lowerPrice;
+    const upperPrice = params.upperPrice;
+    const binStep = params.binStep;
+
+    // Calculate number of bins on each side of initial price
+    const minId = getIdFromPrice(lowerPrice, binStep);
+    const maxId = getIdFromPrice(upperPrice, binStep);
+    const initialPriceId = getIdFromPrice(initialPrice, binStep);
+
+    const quoteBins = Math.max(0, initialPriceId - minId);
+    const baseBins = Math.max(0, maxId - initialPriceId + 1);
+
+    // Determine which token to calculate
+    const hasQuote = typeof params.quoteAmount === 'number' && params.quoteAmount !== 0;
+    const hasBase = typeof params.baseAmount === 'number' && params.baseAmount !== 0;
+
+    if (!hasQuote && !hasBase) {
+      // Neither is filled, nothing to auto-fill
+      return;
+    }
+
+    let newParams = { ...params };
+
+    // If both are filled, recalculate base based on quote
+    if (hasQuote && hasBase) {
+      if (quoteBins > 0 && baseBins > 0) {
+        newParams.baseAmount = ((params.quoteAmount as number) * baseBins) / (initialPrice * quoteBins);
+      } else if (baseBins > 0) {
+        newParams.baseAmount = 0;
+      } else {
+        newParams.baseAmount = (params.quoteAmount as number) / initialPrice;
+      }
+      setLastAutoFilledToken('base');
+      setParams(newParams);
+      return;
+    }
+
+    // Only one is filled, calculate the other
+    if (hasQuote && !hasBase) {
+      if (quoteBins > 0 && baseBins > 0) {
+        newParams.baseAmount = ((params.quoteAmount as number) * baseBins) / (initialPrice * quoteBins);
+      } else if (baseBins > 0) {
+        newParams.baseAmount = 0;
+      } else {
+        newParams.baseAmount = (params.quoteAmount as number) / initialPrice;
+      }
+      setLastAutoFilledToken('base');
+      setParams(newParams);
+    } else if (hasBase && !hasQuote) {
+      if (quoteBins > 0 && baseBins > 0) {
+        newParams.quoteAmount = ((params.baseAmount as number) * initialPrice * quoteBins) / baseBins;
+      } else if (quoteBins > 0) {
+        newParams.quoteAmount = 0;
+      } else {
+        newParams.quoteAmount = (params.baseAmount as number) * initialPrice;
+      }
+      setLastAutoFilledToken('quote');
+      setParams(newParams);
+    }
+  }, [autoFill]);
+
+  // Recalculate auto-filled token when initial price changes
+  useEffect(() => {
+    if (!autoFill || !lastAutoFilledToken) return;
+    if (typeof params.initialPrice !== 'number' ||
+        typeof params.lowerPrice !== 'number' ||
+        typeof params.upperPrice !== 'number' ||
+        typeof params.binStep !== 'number') return;
+
+    const initialPrice = params.initialPrice;
+    const lowerPrice = params.lowerPrice;
+    const upperPrice = params.upperPrice;
+    const binStep = params.binStep;
+
+    // Calculate number of bins on each side of initial price
+    const minId = getIdFromPrice(lowerPrice, binStep);
+    const maxId = getIdFromPrice(upperPrice, binStep);
+    const initialPriceId = getIdFromPrice(initialPrice, binStep);
+
+    const quoteBins = Math.max(0, initialPriceId - minId);
+    const baseBins = Math.max(0, maxId - initialPriceId + 1);
+
+    let newParams = { ...params };
+
+    if (lastAutoFilledToken === 'quote') {
+      // Recalculate quote based on base
+      if (typeof params.baseAmount === 'number') {
+        if (quoteBins > 0 && baseBins > 0) {
+          newParams.quoteAmount = (params.baseAmount * initialPrice * quoteBins) / baseBins;
+        } else if (quoteBins > 0) {
+          newParams.quoteAmount = 0;
+        } else {
+          newParams.quoteAmount = params.baseAmount * initialPrice;
+        }
+        setParams(newParams);
+      }
+    } else if (lastAutoFilledToken === 'base') {
+      // Recalculate base based on quote
+      if (typeof params.quoteAmount === 'number') {
+        if (quoteBins > 0 && baseBins > 0) {
+          newParams.baseAmount = (params.quoteAmount * baseBins) / (initialPrice * quoteBins);
+        } else if (baseBins > 0) {
+          newParams.baseAmount = 0;
+        } else {
+          newParams.baseAmount = params.quoteAmount / initialPrice;
+        }
+        setParams(newParams);
+      }
+    }
+  }, [params.initialPrice, autoFill, lastAutoFilledToken]);
 
   const handleParamChange = (field: keyof PartialSimulationParams, value: string) => {
     const numValue = parseFloat(value);
@@ -132,6 +262,53 @@ export function DlmmSimulator() {
     if (field === 'initialPrice') {
       setParams(prev => ({ ...prev, initialPrice: finalValue }));
       setCurrentPrice(finalValue);
+    } else if (autoFill && (field === 'baseAmount' || field === 'quoteAmount')) {
+      // Auto-fill the other token amount for balanced position
+      const newParams = { ...params, [field]: finalValue };
+
+      if (typeof finalValue === 'number' &&
+          typeof newParams.initialPrice === 'number' &&
+          typeof newParams.lowerPrice === 'number' &&
+          typeof newParams.upperPrice === 'number' &&
+          typeof newParams.binStep === 'number') {
+
+        const initialPrice = newParams.initialPrice;
+        const lowerPrice = newParams.lowerPrice;
+        const upperPrice = newParams.upperPrice;
+        const binStep = newParams.binStep;
+
+        // Calculate number of bins on each side of initial price
+        const minId = getIdFromPrice(lowerPrice, binStep);
+        const maxId = getIdFromPrice(upperPrice, binStep);
+        const initialPriceId = getIdFromPrice(initialPrice, binStep);
+
+        const quoteBins = Math.max(0, initialPriceId - minId); // bins below initial price
+        const baseBins = Math.max(0, maxId - initialPriceId + 1); // bins at or above initial price
+
+        // For balanced distribution: quoteAmount / quoteBins = (baseAmount * initialPrice) / baseBins
+        // This ensures each bin has equal value
+        if (field === 'baseAmount') {
+          if (quoteBins > 0 && baseBins > 0) {
+            newParams.quoteAmount = (finalValue * initialPrice * quoteBins) / baseBins;
+          } else if (quoteBins > 0) {
+            newParams.quoteAmount = 0;
+          } else {
+            newParams.quoteAmount = finalValue * initialPrice;
+          }
+          setLastAutoFilledToken('quote');
+        } else {
+          if (quoteBins > 0 && baseBins > 0) {
+            newParams.baseAmount = (finalValue * baseBins) / (initialPrice * quoteBins);
+          } else if (baseBins > 0) {
+            newParams.baseAmount = 0;
+          } else {
+            newParams.baseAmount = finalValue / initialPrice;
+          }
+          setLastAutoFilledToken('base');
+        }
+      }
+
+      setParams(newParams);
     } else {
       setParams(prev => ({ ...prev, [field]: finalValue }));
     }
@@ -146,6 +323,8 @@ export function DlmmSimulator() {
     setCurrentPrice(defaultParams.initialPrice);
     setInitialBins([]);
     setSimulation(null);
+    setSelectedPool(null);
+    setTokenSymbols({ base: 'Base', quote: 'Quote' });
   };
   
   const handleInitialPriceChange = (newInitialPrice: number) => {
@@ -155,6 +334,37 @@ export function DlmmSimulator() {
   const handleCurrentPriceChange = (newCurrentPrice: number) => {
     setCurrentPrice(newCurrentPrice);
   }
+
+  const handlePoolSelect = (pool: MeteoraPair) => {
+    setSelectedPool(pool);
+
+    // Update token symbols
+    const symbols = parseTokenSymbols(pool.name);
+    setTokenSymbols(symbols);
+
+    // Calculate price range: 69 bins centered around initial price
+    const currentBinId = getIdFromPrice(pool.current_price, pool.bin_step);
+    const lowerBinId = currentBinId - 34;
+    const upperBinId = currentBinId + 34;
+
+    // Add small epsilon to ensure the bin IDs are included when converting back
+    // This accounts for floating-point precision issues
+    const basis = 1 + pool.bin_step / 10000;
+    const lowerPrice = getPriceFromId(lowerBinId, pool.bin_step) * Math.pow(basis, 0.01);
+    const upperPrice = getPriceFromId(upperBinId, pool.bin_step) * Math.pow(basis, 0.99);
+
+    // Update simulation params
+    setParams(prev => ({
+      ...prev,
+      binStep: pool.bin_step,
+      initialPrice: pool.current_price,
+      lowerPrice: lowerPrice,
+      upperPrice: upperPrice,
+    }));
+
+    // Update current price to match the pool
+    setCurrentPrice(pool.current_price);
+  };
 
   const analysis = simulation?.analysis;
 
@@ -236,6 +446,16 @@ export function DlmmSimulator() {
         <div className="lg:col-span-1 flex flex-col gap-6">
           <Card>
             <CardHeader>
+              <CardTitle className="flex items-center gap-2">Search for a Pool</CardTitle>
+              <CardDescription>Search and select a Meteora DLMM pool to simulate, or manually enter the the position information below.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <PoolSelector onSelectPool={handlePoolSelect} selectedPool={selectedPool} />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
               <CardTitle className="flex items-center gap-2"><Layers />Pool Parameters</CardTitle>
             </CardHeader>
             <CardContent className="grid gap-4">
@@ -255,12 +475,12 @@ export function DlmmSimulator() {
                 <Label className="flex items-center gap-1.5"><MoveHorizontal className="w-4 h-4" />Strategy</Label>
                 <RadioGroup value={params.strategy} onValueChange={handleStrategyChange} className="flex gap-4">
                   <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="bid-ask" id="bid-ask" />
-                    <Label htmlFor="bid-ask">Bid-Ask</Label>
-                  </div>
-                  <div className="flex items-center space-x-2">
                     <RadioGroupItem value="spot" id="spot" />
                     <Label htmlFor="spot">Spot</Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="bid-ask" id="bid-ask" />
+                    <Label htmlFor="bid-ask">Bid-Ask</Label>
                   </div>
                    <div className="flex items-center space-x-2">
                     <RadioGroupItem value="curve" id="curve" />
@@ -275,12 +495,16 @@ export function DlmmSimulator() {
                   <Input id="upperPrice" type="number" placeholder="Max" value={params.upperPrice} onChange={e => handleParamChange('upperPrice', e.target.value)} step="0.000001" />
                 </div>
               </div>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="autoFill">Auto-Fill</Label>
+                <Switch id="autoFill" checked={autoFill} onCheckedChange={setAutoFill} />
+              </div>
               <div className="grid gap-2">
-                <Label htmlFor="baseAmount">Base Token Amount</Label>
+                <Label htmlFor="baseAmount">{tokenSymbols.base} Token Amount</Label>
                 <Input id="baseAmount" type="number" value={params.baseAmount} onChange={e => handleParamChange('baseAmount', e.target.value)} />
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="quoteAmount">Quote Token Amount</Label>
+                <Label htmlFor="quoteAmount">{tokenSymbols.quote} Token Amount</Label>
                 <Input id="quoteAmount" type="number" value={params.quoteAmount} onChange={e => handleParamChange('quoteAmount', e.target.value)} />
               </div>
                <div className="grid gap-2">
@@ -300,7 +524,10 @@ export function DlmmSimulator() {
         <div className="lg:col-span-2 flex flex-col gap-6">
           <Card className="flex-grow flex flex-col">
             <CardHeader>
-              <CardTitle className="flex items-center gap-2"><CandlestickChart />Liquidity Distribution</CardTitle>
+              <CardTitle className="flex items-center gap-2">
+                <CandlestickChart />
+                {selectedPool && params.binStep ? `Liquidity Distribution for ${selectedPool.name} ${params.binStep} Bin Step` : 'Liquidity Distribution'}
+              </CardTitle>
             </CardHeader>
             <CardContent className="flex-grow flex flex-col justify-center gap-4 pt-8">
               <div className="h-80 w-full">
@@ -348,11 +575,11 @@ export function DlmmSimulator() {
                     <span className="font-bold text-lg">{priceChangeDisplay}</span>
                   </div>
                    <div className="flex flex-col gap-1 p-3 bg-secondary rounded-lg">
-                    <span className="text-muted-foreground">Base Tokens</span>
+                    <span className="text-muted-foreground">{tokenSymbols.base} Tokens</span>
                     <span className="font-bold text-lg"><FormattedNumber value={displayBase} maximumFractionDigits={4} /></span>
                   </div>
                    <div className="flex flex-col gap-1 p-3 bg-secondary rounded-lg">
-                    <span className="text-muted-foreground">Quote Tokens</span>
+                    <span className="text-muted-foreground">{tokenSymbols.quote} Tokens</span>
                     <span className="font-bold text-lg"><FormattedNumber value={displayQuote} maximumFractionDigits={4} /></span>
                   </div>
                   <div className="flex flex-col gap-1 p-3 bg-secondary rounded-lg">
