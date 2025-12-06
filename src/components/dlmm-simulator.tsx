@@ -120,7 +120,7 @@ export function DlmmSimulator() {
 
   useEffect(() => {
     if (initialBins.length > 0 && typeof currentPrice === 'number' && simulationParams) {
-      const result = runSimulation(initialBins, currentPrice, simulationParams.initialPrice, simulationParams.strategy);
+      const result = runSimulation(initialBins, currentPrice, simulationParams.initialPrice);
       setSimulation(result);
     } else {
       setSimulation(null);
@@ -199,6 +199,43 @@ export function DlmmSimulator() {
 
     const totalBins = quoteBinsCount + baseBinsCount;
 
+    // Helper function to calculate weighted sums based on strategy
+    const calculateWeightedSums = () => {
+      let quoteSumWeight = 0;
+      let baseSumWeightOverPrice = 0;
+
+      if (params.strategy === 'spot') {
+        // Spot: equal value per bin
+        for (let id = minId; id <= maxId; id++) {
+          const price = getPriceFromId(id, binStep);
+          if (id > initialPriceId) {
+            baseSumWeightOverPrice += 1 / price;
+          }
+        }
+        quoteSumWeight = quoteBinsCount;
+      } else {
+        // Bid-ask or curve: weighted distribution
+        for (let id = minId; id <= initialPriceId; id++) {
+          const dist = initialPriceId - id;
+          const weight = params.strategy === 'curve'
+            ? Math.max(1, initialPriceId - minId - dist)
+            : dist + 1;
+          quoteSumWeight += weight;
+        }
+
+        for (let id = initialPriceId + 1; id <= maxId; id++) {
+          const dist = id - initialPriceId;
+          const weight = params.strategy === 'curve'
+            ? Math.max(1, maxId - initialPriceId - dist)
+            : dist + 1;
+          const price = getPriceFromId(id, binStep);
+          baseSumWeightOverPrice += weight / price;
+        }
+      }
+
+      return { quoteSumWeight, baseSumWeightOverPrice };
+    };
+
     // Determine which token to calculate
     const hasQuote = typeof params.quoteAmount === 'number' && params.quoteAmount !== 0;
     const hasBase = typeof params.baseAmount === 'number' && params.baseAmount !== 0;
@@ -210,37 +247,14 @@ export function DlmmSimulator() {
 
     let newParams = { ...params };
 
-    // For a FLAT distribution where each bin has equal VALUE:
-    // Let V = value per bin
-    // Total quote value = V * quoteBinsCount
-    // Total base value = V * baseBinsCount
-    //
-    // We know: quoteAmount = V * quoteBinsCount
-    // And: baseAmount * initialPrice = V * baseBinsCount
-    //
-    // Therefore: quoteAmount / quoteBinsCount = (baseAmount * initialPrice) / baseBinsCount
-    // Solving: quoteAmount = (baseAmount * initialPrice * quoteBinsCount) / baseBinsCount
-
     // If both are filled, recalculate base based on quote
     if (hasQuote && hasBase) {
       if (quoteBinsCount > 0 && baseBinsCount > 0) {
-        if (params.strategy === 'spot') {
-          let sumInvPrice = 0;
-          for (let id = minId; id <= maxId; id++) {
-            const price = getPriceFromId(id, binStep);
-            if (id > initialPriceId) {
-              sumInvPrice += 1 / price;
-            }
-          }
-          newParams.baseAmount = (params.quoteAmount as number) / quoteBinsCount * sumInvPrice;
-        } else {
-          newParams.baseAmount = ((params.quoteAmount as number) * baseBinsCount) / (initialPrice * quoteBinsCount);
-        }
+        const { quoteSumWeight, baseSumWeightOverPrice } = calculateWeightedSums();
+        newParams.baseAmount = (params.quoteAmount as number) * (baseSumWeightOverPrice / quoteSumWeight);
       } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
-        // Price below range - only base bins exist, zero out quote
         newParams.quoteAmount = 0;
       } else if (quoteBinsCount > 0 && baseBinsCount === 0) {
-        // Price above range - only quote bins exist, zero out base
         newParams.baseAmount = 0;
       }
       setLastAutoFilledToken('base');
@@ -251,52 +265,28 @@ export function DlmmSimulator() {
     // Only one is filled, calculate the other
     if (hasQuote && !hasBase) {
       if (quoteBinsCount > 0 && baseBinsCount > 0) {
-        if (params.strategy === 'spot') {
-          let sumInvPrice = 0;
-          for (let id = minId; id <= maxId; id++) {
-            const price = getPriceFromId(id, binStep);
-            if (id > initialPriceId) {
-              sumInvPrice += 1 / price;
-            }
-          }
-          newParams.baseAmount = (params.quoteAmount as number) / quoteBinsCount * sumInvPrice;
-        } else {
-          newParams.baseAmount = ((params.quoteAmount as number) * baseBinsCount) / (initialPrice * quoteBinsCount);
-        }
+        const { quoteSumWeight, baseSumWeightOverPrice } = calculateWeightedSums();
+        newParams.baseAmount = (params.quoteAmount as number) * (baseSumWeightOverPrice / quoteSumWeight);
       } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
-        // Price below range - only base bins exist, zero out quote
         newParams.quoteAmount = 0;
       } else if (quoteBinsCount > 0 && baseBinsCount === 0) {
-        // Price above range - only quote bins exist, zero out base
         newParams.baseAmount = 0;
       }
       setLastAutoFilledToken('base');
       setParams(newParams);
     } else if (hasBase && !hasQuote) {
       if (quoteBinsCount > 0 && baseBinsCount > 0) {
-        if (params.strategy === 'spot') {
-          let sumInvPrice = 0;
-          for (let id = minId; id <= maxId; id++) {
-            const price = getPriceFromId(id, binStep);
-            if (id > initialPriceId) {
-              sumInvPrice += 1 / price;
-            }
-          }
-          newParams.quoteAmount = (params.baseAmount as number) / sumInvPrice * quoteBinsCount;
-        } else {
-          newParams.quoteAmount = ((params.baseAmount as number) * initialPrice * quoteBinsCount) / baseBinsCount;
-        }
+        const { quoteSumWeight, baseSumWeightOverPrice } = calculateWeightedSums();
+        newParams.quoteAmount = (params.baseAmount as number) * (quoteSumWeight / baseSumWeightOverPrice);
       } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
-        // Price below range - only base bins exist, zero out quote
         newParams.quoteAmount = 0;
       } else if (quoteBinsCount > 0 && baseBinsCount === 0) {
-        // Price above range - only quote bins exist, zero out base
         newParams.baseAmount = 0;
       }
       setLastAutoFilledToken('quote');
       setParams(newParams);
     }
-  }, [autoFill, params.lowerPrice, params.upperPrice, params.binStep]);
+  }, [autoFill, params.lowerPrice, params.upperPrice, params.binStep, params.strategy]);
 
   // Recalculate auto-filled token when initial price changes
   useEffect(() => {
@@ -334,29 +324,52 @@ export function DlmmSimulator() {
       baseBinsCount = maxId - initialPriceId;
     }
 
+    // Helper function to calculate weighted sums
+    const calculateWeightedSums = () => {
+      let quoteSumWeight = 0;
+      let baseSumWeightOverPrice = 0;
+
+      if (params.strategy === 'spot') {
+        for (let id = minId; id <= maxId; id++) {
+          const price = getPriceFromId(id, binStep);
+          if (id > initialPriceId) {
+            baseSumWeightOverPrice += 1 / price;
+          }
+        }
+        quoteSumWeight = quoteBinsCount;
+      } else {
+        for (let id = minId; id <= initialPriceId; id++) {
+          const dist = initialPriceId - id;
+          const weight = params.strategy === 'curve'
+            ? Math.max(1, initialPriceId - minId - dist)
+            : dist + 1;
+          quoteSumWeight += weight;
+        }
+
+        for (let id = initialPriceId + 1; id <= maxId; id++) {
+          const dist = id - initialPriceId;
+          const weight = params.strategy === 'curve'
+            ? Math.max(1, maxId - initialPriceId - dist)
+            : dist + 1;
+          const price = getPriceFromId(id, binStep);
+          baseSumWeightOverPrice += weight / price;
+        }
+      }
+
+      return { quoteSumWeight, baseSumWeightOverPrice };
+    };
+
     let newParams = { ...params };
 
     if (lastAutoFilledToken === 'quote') {
       // Recalculate quote based on base
       if (typeof params.baseAmount === 'number') {
         if (quoteBinsCount > 0 && baseBinsCount > 0) {
-          if (params.strategy === 'spot') {
-            let sumInvPrice = 0;
-            for (let id = minId; id <= maxId; id++) {
-              const price = getPriceFromId(id, binStep);
-              if (id > initialPriceId) {
-                sumInvPrice += 1 / price;
-              }
-            }
-            newParams.quoteAmount = params.baseAmount / sumInvPrice * quoteBinsCount;
-          } else {
-            newParams.quoteAmount = (params.baseAmount * initialPrice * quoteBinsCount) / baseBinsCount;
-          }
+          const { quoteSumWeight, baseSumWeightOverPrice } = calculateWeightedSums();
+          newParams.quoteAmount = params.baseAmount * (quoteSumWeight / baseSumWeightOverPrice);
         } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
-          // Price below range - only base bins exist, zero out quote
           newParams.quoteAmount = 0;
         } else if (quoteBinsCount > 0 && baseBinsCount === 0) {
-          // Price above range - only quote bins exist, zero out base
           newParams.baseAmount = 0;
         }
         setParams(newParams);
@@ -365,29 +378,17 @@ export function DlmmSimulator() {
       // Recalculate base based on quote
       if (typeof params.quoteAmount === 'number') {
         if (quoteBinsCount > 0 && baseBinsCount > 0) {
-          if (params.strategy === 'spot') {
-            let sumInvPrice = 0;
-            for (let id = minId; id <= maxId; id++) {
-              const price = getPriceFromId(id, binStep);
-              if (id > initialPriceId) {
-                sumInvPrice += 1 / price;
-              }
-            }
-            newParams.baseAmount = params.quoteAmount / quoteBinsCount * sumInvPrice;
-          } else {
-            newParams.baseAmount = (params.quoteAmount * baseBinsCount) / (initialPrice * quoteBinsCount);
-          }
+          const { quoteSumWeight, baseSumWeightOverPrice } = calculateWeightedSums();
+          newParams.baseAmount = params.quoteAmount * (baseSumWeightOverPrice / quoteSumWeight);
         } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
-          // Price below range - only base bins exist, zero out quote
           newParams.quoteAmount = 0;
         } else if (quoteBinsCount > 0 && baseBinsCount === 0) {
-          // Price above range - only quote bins exist, zero out base
           newParams.baseAmount = 0;
         }
         setParams(newParams);
       }
     }
-  }, [params.initialPrice, autoFill, lastAutoFilledToken]);
+  }, [params.initialPrice, autoFill, lastAutoFilledToken, params.strategy]);
 
   const handlePricePercentageChange = (priceType: 'lower' | 'upper', value: string) => {
     const numValue = parseFloat(value);
@@ -462,47 +463,58 @@ export function DlmmSimulator() {
           baseBinsCount = maxId - initialPriceId;
         }
 
+        // Helper function to calculate weighted sums
+        const calculateWeightedSums = () => {
+          let quoteSumWeight = 0;
+          let baseSumWeightOverPrice = 0;
+
+          if (newParams.strategy === 'spot') {
+            for (let id = minId; id <= maxId; id++) {
+              const price = getPriceFromId(id, binStep);
+              if (id > initialPriceId) {
+                baseSumWeightOverPrice += 1 / price;
+              }
+            }
+            quoteSumWeight = quoteBinsCount;
+          } else {
+            for (let id = minId; id <= initialPriceId; id++) {
+              const dist = initialPriceId - id;
+              const weight = newParams.strategy === 'curve'
+                ? Math.max(1, initialPriceId - minId - dist)
+                : dist + 1;
+              quoteSumWeight += weight;
+            }
+
+            for (let id = initialPriceId + 1; id <= maxId; id++) {
+              const dist = id - initialPriceId;
+              const weight = newParams.strategy === 'curve'
+                ? Math.max(1, maxId - initialPriceId - dist)
+                : dist + 1;
+              const price = getPriceFromId(id, binStep);
+              baseSumWeightOverPrice += weight / price;
+            }
+          }
+
+          return { quoteSumWeight, baseSumWeightOverPrice };
+        };
+
         if (field === 'baseAmount') {
           if (quoteBinsCount > 0 && baseBinsCount > 0) {
-            if (newParams.strategy === 'spot') {
-              let sumInvPrice = 0;
-              for (let id = minId; id <= maxId; id++) {
-                const price = getPriceFromId(id, binStep);
-                if (id > initialPriceId) {
-                  sumInvPrice += 1 / price;
-                }
-              }
-              newParams.quoteAmount = finalValue / sumInvPrice * quoteBinsCount;
-            } else {
-              newParams.quoteAmount = (finalValue * initialPrice * quoteBinsCount) / baseBinsCount;
-            }
+            const { quoteSumWeight, baseSumWeightOverPrice } = calculateWeightedSums();
+            newParams.quoteAmount = finalValue * (quoteSumWeight / baseSumWeightOverPrice);
           } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
-            // Price below range - only base bins exist, zero out quote
             newParams.quoteAmount = 0;
           } else if (quoteBinsCount > 0 && baseBinsCount === 0) {
-            // Price above range - only quote bins exist, zero out base
             newParams.baseAmount = 0;
           }
           setLastAutoFilledToken('quote');
         } else {
           if (quoteBinsCount > 0 && baseBinsCount > 0) {
-            if (newParams.strategy === 'spot') {
-              let sumInvPrice = 0;
-              for (let id = minId; id <= maxId; id++) {
-                const price = getPriceFromId(id, binStep);
-                if (id > initialPriceId) {
-                  sumInvPrice += 1 / price;
-                }
-              }
-              newParams.baseAmount = finalValue / quoteBinsCount * sumInvPrice;
-            } else {
-              newParams.baseAmount = (finalValue * baseBinsCount) / (initialPrice * quoteBinsCount);
-            }
+            const { quoteSumWeight, baseSumWeightOverPrice } = calculateWeightedSums();
+            newParams.baseAmount = finalValue * (baseSumWeightOverPrice / quoteSumWeight);
           } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
-            // Price below range - only base bins exist, zero out quote
             newParams.quoteAmount = 0;
           } else if (quoteBinsCount > 0 && baseBinsCount === 0) {
-            // Price above range - only quote bins exist, zero out base
             newParams.baseAmount = 0;
           }
           setLastAutoFilledToken('base');
@@ -551,11 +563,9 @@ export function DlmmSimulator() {
     const lowerBinId = currentBinId - 34;
     const upperBinId = currentBinId + 34;
 
-    // Add small epsilon to ensure the bin IDs are included when converting back
-    // This accounts for floating-point precision issues
-    const basis = 1 + pool.bin_step / 10000;
-    const lowerPrice = getPriceFromId(lowerBinId, pool.bin_step) * Math.pow(basis, 0.01);
-    const upperPrice = getPriceFromId(upperBinId, pool.bin_step) * Math.pow(basis, 0.99);
+    // Get the exact bin prices - these will be the boundaries
+    const lowerPrice = getPriceFromId(lowerBinId, pool.bin_step);
+    const upperPrice = getPriceFromId(upperBinId, pool.bin_step);
 
     // Update simulation params
     setParams(prev => ({
@@ -867,6 +877,7 @@ export function DlmmSimulator() {
                     initialPrice={params.initialPrice}
                     lowerPrice={params.lowerPrice}
                     upperPrice={params.upperPrice}
+                    strategy={params.strategy}
                     onCurrentPriceChange={handleCurrentPriceChange}
                     onInitialPriceChange={handleInitialPriceChange}
                   />

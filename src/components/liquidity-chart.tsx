@@ -2,9 +2,11 @@
 "use client"
 
 import { useMemo, useRef, useState, useEffect, useCallback } from "react";
-import { type SimulatedBin, getIdFromPrice, getPriceFromId } from "@/lib/dlmm";
+import { type SimulatedBin, getIdFromPrice, getPriceFromId, type Strategy } from "@/lib/dlmm";
 import { formatNumber } from "@/lib/utils";
 import { useDlmmContext } from "./dlmm-simulator";
+import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 // Track previous bins to detect changes for animations
 interface AnimatedBin extends SimulatedBin {
@@ -12,14 +14,15 @@ interface AnimatedBin extends SimulatedBin {
 }
 
 interface LiquidityChartProps {
-  bins: SimulatedBin[];
-  simulatedBins: SimulatedBin[];
-  currentPrice: number;
-  initialPrice: number;
-  lowerPrice: number;
-  upperPrice: number;
-  onCurrentPriceChange: (price: number) => void;
-  onInitialPriceChange: (price: number) => void;
+   bins: SimulatedBin[];
+   simulatedBins: SimulatedBin[];
+   currentPrice: number;
+   initialPrice: number;
+   lowerPrice: number;
+   upperPrice: number;
+   strategy: Strategy;
+   onCurrentPriceChange: (price: number) => void;
+   onInitialPriceChange: (price: number) => void;
 }
 
 const FormattedNumber = ({ value, maximumFractionDigits }: { value: number; maximumFractionDigits?: number }) => {
@@ -40,14 +43,15 @@ const FormattedNumber = ({ value, maximumFractionDigits }: { value: number; maxi
 };
 
 export function LiquidityChart({
-  bins,
-  simulatedBins,
-  currentPrice,
-  initialPrice,
-  lowerPrice,
-  upperPrice,
-  onCurrentPriceChange,
-  onInitialPriceChange
+   bins,
+   simulatedBins,
+   currentPrice,
+   initialPrice,
+   lowerPrice,
+   upperPrice,
+   strategy,
+   onCurrentPriceChange,
+   onInitialPriceChange
 }: LiquidityChartProps) {
   const { params } = useDlmmContext();
   const chartRef = useRef<HTMLDivElement>(null);
@@ -57,7 +61,23 @@ export function LiquidityChart({
   const [isInitialAnimation, setIsInitialAnimation] = useState(false);
   const [hoveredBin, setHoveredBin] = useState<SimulatedBin | null>(null);
   const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
+  const [useCurrentPrice, setUseCurrentPrice] = useState(false);
   const prevBinsRef = useRef<SimulatedBin[]>([]);
+
+  // Helper function to get the value for bin height based on toggle
+  const getBinValue = useCallback((bin: SimulatedBin) => {
+    if (useCurrentPrice) {
+      // Use current price to calculate value for base tokens
+      if (bin.currentTokenType === 'base') {
+        return bin.currentAmount * currentPrice;
+      } else {
+        return bin.currentAmount;
+      }
+    } else {
+      // Use bin price to show static distribution shape
+      return bin.displayValue;
+    }
+  }, [useCurrentPrice, currentPrice]);
   
   // Detect when bins change to trigger animations
   useEffect(() => {
@@ -91,9 +111,9 @@ export function LiquidityChart({
   const maxValue = useMemo(() => {
     const binsToDisplay = simulatedBins.length > 0 ? simulatedBins : bins;
     if (!binsToDisplay || binsToDisplay.length === 0) return 1;
-    const max = Math.max(...binsToDisplay.map(b => b.displayValue));
+    const max = Math.max(...binsToDisplay.map(b => getBinValue(b)));
     return max > 0 ? max : 1;
-  }, [bins, simulatedBins]);
+  }, [bins, simulatedBins, getBinValue]);
 
   const priceRange = useMemo(() => {
     if (typeof params.binStep !== 'number' || params.binStep <= 0) {
@@ -194,7 +214,12 @@ export function LiquidityChart({
       document.removeEventListener('pointerup', handleMouseUp as EventListener);
     };
   }, [isDraggingCurrent, isDraggingInitial, handleMouseMove, handleMouseUp]);
-
+  
+  // Reset useCurrentPrice toggle when strategy changes
+  useEffect(() => {
+    setUseCurrentPrice(false);
+  }, [strategy]);
+  
   // Calculate gap size based on number of bins to prevent overflow
   const gapClass = bins.length > 200 ? '' : bins.length > 100 ? 'gap-[0.5px]' : 'gap-px';
 
@@ -242,6 +267,38 @@ export function LiquidityChart({
 
   return (
         <div className="flex flex-col h-full w-full justify-between relative">
+          {/* Use Current Price Toggle and Reset Button - positioned above the chart */}
+          <div className="flex items-center gap-4 mb-16 px-3 py-1.5 bg-card/80 backdrop-blur-sm rounded-md border border-border/50 shadow-sm self-start">
+            <div className="flex items-center gap-2">
+              <Switch checked={useCurrentPrice} onCheckedChange={setUseCurrentPrice} />
+              <label className="text-xs text-muted-foreground font-medium whitespace-nowrap">Use Current Price</label>
+              <TooltipProvider delayDuration={0}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-muted-foreground/30 cursor-help hover:border-muted-foreground/60 transition-colors">
+                      <span className="text-[10px] italic text-muted-foreground font-serif">i</span>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-xs">
+                    <p className="text-xs">
+                      By default, the liquidity distribution is displayed in the same manner as the Meteora UI,
+                      showing bin heights based on each bin's price. Enabling this toggle will calculate the
+                      height of base token bins using the current price instead, providing a real-time value view.
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            </div>
+            {/* Reset Button - uses visibility to maintain space when hidden */}
+            <button
+              onClick={() => onCurrentPriceChange(initialPrice)}
+              className="px-3 py-1.5 bg-gradient-to-br from-primary/90 to-purple-500/90 hover:from-primary hover:to-purple-500 text-white text-xs rounded-md shadow-lg transition-all duration-200 hover:scale-105 hover:shadow-xl backdrop-blur-sm border border-white/20 font-medium"
+              style={{ visibility: isPriceDifferent ? 'visible' : 'hidden' }}
+              title="Reset current price to initial price"
+            >
+              Reset Price
+            </button>
+          </div>
           <div className="relative w-full flex-grow" ref={chartRef}>
           {/* Liquidity Bins */}
           <div className={`flex items-end h-full w-full ${gapClass}`}>
@@ -254,7 +311,7 @@ export function LiquidityChart({
                   key={bin.id}
                   className={`flex-1 transition-all duration-500 ease-out relative hover:brightness-110 ${isInitialAnimation ? 'bin-enter' : ''}`}
                   style={{
-                    height: `${(bin.displayValue / maxValue) * 100}%`,
+                    height: `${(getBinValue(bin) / maxValue) * 100}%`,
                     backgroundColor: baseColor,
                     transitionDelay: `${bin.animationDelay}ms`,
                     animationDelay: isInitialAnimation ? `${bin.animationDelay}ms` : undefined,
@@ -303,16 +360,6 @@ export function LiquidityChart({
                  style={{ boxShadow: '0 0 10px rgba(66, 153, 225, 0.5)' }} />
           </div>
 
-          {/* Reset Button - appears when current price differs from initial price */}
-          {isPriceDifferent && (
-            <button
-              onClick={() => onCurrentPriceChange(initialPrice)}
-              className="absolute top-2 right-2 px-3 py-1.5 bg-gradient-to-br from-primary/90 to-purple-500/90 hover:from-primary hover:to-purple-500 text-white text-xs rounded-md shadow-lg transition-all duration-200 hover:scale-105 hover:shadow-xl backdrop-blur-sm border border-white/20 font-medium"
-              title="Reset current price to initial price"
-            >
-              Reset Price
-            </button>
-          )}
 
           {/* Bin Tooltip */}
           {hoveredBin && (

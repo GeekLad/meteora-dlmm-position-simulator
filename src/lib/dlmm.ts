@@ -51,9 +51,12 @@ export function getInitialBins(params: SimulationParams): SimulatedBin[] {
   if (lowerPrice <= 0 || upperPrice <= lowerPrice || binStep <= 0 || initialPrice <= 0) {
     return [];
   }
-  
+
+  // Use floor for lower bound and ceil for upper bound to ensure the range includes both prices
   const minId = getIdFromPrice(lowerPrice, binStep);
-  const maxId = getIdFromPrice(upperPrice, binStep);
+  const basis = 1 + binStep / 10000;
+  const maxIdExact = Math.log(upperPrice) / Math.log(basis) + 262144;
+  const maxId = Math.ceil(maxIdExact);
   const initialPriceId = getIdFromPrice(initialPrice, binStep);
   
   const priceValid = initialPriceId >= minId && initialPriceId <= maxId;
@@ -94,14 +97,14 @@ export function getInitialBins(params: SimulationParams): SimulatedBin[] {
     const weights = quoteBins.map(qb => {
       const dist = initialPriceId - qb.id;
       let weight: number;
-      
+
       switch(strategy) {
         case 'curve':
           const maxDist = initialPriceId - minId;
           weight = maxDist > 0 ? maxDist - dist : 1;
           break;
         case 'bid-ask':
-          weight = dist;
+          weight = dist + 1;
           break;
         case 'spot':
         default:
@@ -147,14 +150,13 @@ export function getInitialBins(params: SimulationParams): SimulatedBin[] {
               weight = maxDist > 0 ? maxDist - dist : 1;
               break;
             case 'bid-ask':
-              weight = dist;
+              weight = dist + 1;
               break;
             default:
               weight = 1;
               break;
           }
-          const value = weight * bb.price;
-          totalValueWeight += value;
+          totalValueWeight += weight;
           return { id: bb.id, weight, price: bb.price };
       });
 
@@ -162,7 +164,7 @@ export function getInitialBins(params: SimulationParams): SimulatedBin[] {
           weights.forEach(({ id, weight, price }) => {
               const binToUpdate = bins.find(b => b.id === id)!;
               // For base tokens, we distribute the total value, then find amount
-              const targetValue = totalValue * (weight * price / totalValueWeight);
+              const targetValue = totalValue * (weight / totalValueWeight);
               const amount = targetValue / price;
 
               binToUpdate.initialTokenType = 'base';
@@ -243,9 +245,10 @@ export function runSimulation(initialBins: SimulatedBin[], currentPrice: number,
         }
     }
     
-    // Update value and display value based on current state
+    // Update value based on current state
     if (simBin.currentTokenType === 'base') {
-        simBin.currentValueInQuote = simBin.currentAmount * currentPrice; // Use currentPrice for base value
+        // Use bin price for base tokens to maintain value consistency
+        simBin.currentValueInQuote = simBin.currentAmount * simBin.price;
     } else {
         simBin.currentValueInQuote = simBin.currentAmount;
     }
@@ -258,6 +261,7 @@ export function runSimulation(initialBins: SimulatedBin[], currentPrice: number,
 
   const analysis = simulatedBins.reduce<Analysis>((acc, bin) => {
       if (bin.currentAmount > 1e-12) { // Tolerance for floating point dust
+        acc.totalValueInQuote += bin.currentValueInQuote;
         if (bin.currentTokenType === 'base') {
           acc.totalBase += bin.currentAmount;
           acc.baseBins += 1;
@@ -268,8 +272,6 @@ export function runSimulation(initialBins: SimulatedBin[], currentPrice: number,
       }
       return acc;
   }, { totalValueInQuote: 0, totalBase: 0, totalQuote: 0, totalBins: initialBins.filter(b => b.initialAmount > 0).length, baseBins: 0, quoteBins: 0 });
-
-  analysis.totalValueInQuote = analysis.totalQuote + (analysis.totalBase * currentPrice);
 
   return { simulatedBins, analysis };
 }
