@@ -14,9 +14,10 @@ import {
 interface PoolSelectorProps {
   onSelectPool: (pool: MeteoraPair) => void;
   selectedPool?: MeteoraPair | null;
+  initialPoolAddress?: string | null;
 }
 
-export function PoolSelector({ onSelectPool, selectedPool }: PoolSelectorProps) {
+export function PoolSelector({ onSelectPool, selectedPool, initialPoolAddress }: PoolSelectorProps) {
   const [allPairs, setAllPairs] = useState<MeteoraPair[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
@@ -93,6 +94,16 @@ export function PoolSelector({ onSelectPool, selectedPool }: PoolSelectorProps) 
       mounted = false;
     };
   }, []);
+
+  // Auto-select pool if initialPoolAddress is provided and pools are loaded
+  useEffect(() => {
+    if (initialPoolAddress && allPairs.length > 0 && !selectedPool) {
+      const pool = allPairs.find(p => p.address === initialPoolAddress);
+      if (pool) {
+        onSelectPool(pool);
+      }
+    }
+  }, [initialPoolAddress, allPairs, selectedPool, onSelectPool]);
 
   // Filter pairs based on debounced search term and bin step
   const filteredPairs = useMemo(() => {

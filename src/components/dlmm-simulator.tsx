@@ -1,7 +1,8 @@
 
 "use client";
 
-import { useState, useMemo, useEffect, createContext, useContext } from "react";
+import { useState, useMemo, useEffect, createContext, useContext, useRef } from "react";
+import { useSearchParams } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -14,6 +15,7 @@ import { RadioGroup, RadioGroupItem } from "./ui/radio-group";
 import { Button } from "./ui/button";
 import { Switch } from "./ui/switch";
 import { PoolSelector } from "@/components/pool-selector";
+import { ShareButton } from '@/components/share-button';
 import { MeteoraPair, parseTokenSymbols } from "@/lib/meteora-api";
 
 type PartialSimulationParams = Omit<SimulationParams, 'strategy' | 'binStep' | 'initialPrice' | 'baseAmount' | 'quoteAmount' | 'lowerPrice' | 'upperPrice'> & {
@@ -90,6 +92,9 @@ export function DlmmSimulator() {
   const [lastAutoFilledToken, setLastAutoFilledToken] = useState<'base' | 'quote' | null>(null);
   const [lowerPricePercentage, setLowerPricePercentage] = useState<number | ''>('');
   const [upperPricePercentage, setUpperPricePercentage] = useState<number | ''>('');
+  const [initialPoolAddress, setInitialPoolAddress] = useState<string | null>(null);
+  const searchParams = useSearchParams();
+  const hasLoadedRef = useRef(false);
 
   const simulationParams = useMemo(() => {
     const allParamsSet =
@@ -157,7 +162,7 @@ export function DlmmSimulator() {
 
   // Auto-fill when toggle is turned on
   useEffect(() => {
-    if (!autoFill) return;
+    if (!autoFill || !hasLoadedRef.current) return;
 
     // Check if we have the necessary params for calculation
     if (typeof params.initialPrice !== 'number' ||
@@ -290,7 +295,7 @@ export function DlmmSimulator() {
 
   // Recalculate auto-filled token when initial price changes
   useEffect(() => {
-    if (!autoFill || !lastAutoFilledToken) return;
+    if (!autoFill || !lastAutoFilledToken || !hasLoadedRef.current) return;
     if (typeof params.initialPrice !== 'number' ||
         typeof params.lowerPrice !== 'number' ||
         typeof params.upperPrice !== 'number' ||
@@ -389,6 +394,82 @@ export function DlmmSimulator() {
       }
     }
   }, [params.initialPrice, autoFill, lastAutoFilledToken, params.strategy]);
+
+  // Parse URL parameters on mount
+  useEffect(() => {
+    const pool = searchParams.get('pool');
+    if (pool) {
+      setInitialPoolAddress(pool);
+    }
+
+    const binStepStr = searchParams.get('binStep');
+    if (binStepStr) {
+      const num = parseFloat(binStepStr);
+      if (!isNaN(num) && num > 0) {
+        setParams(prev => ({ ...prev, binStep: num }));
+      }
+    }
+
+    const strategy = searchParams.get('strategy');
+    if (strategy && ['spot', 'bid-ask', 'curve'].includes(strategy)) {
+      setParams(prev => ({ ...prev, strategy: strategy as Strategy }));
+    }
+
+    const lowerPriceStr = searchParams.get('lowerPrice');
+    if (lowerPriceStr) {
+      const num = parseFloat(lowerPriceStr);
+      if (!isNaN(num) && num > 0) {
+        setParams(prev => ({ ...prev, lowerPrice: num }));
+      }
+    }
+
+    const upperPriceStr = searchParams.get('upperPrice');
+    if (upperPriceStr) {
+      const num = parseFloat(upperPriceStr);
+      if (!isNaN(num) && num > 0) {
+        setParams(prev => ({ ...prev, upperPrice: num }));
+      }
+    }
+
+    const baseAmountStr = searchParams.get('baseAmount');
+    if (baseAmountStr) {
+      const num = parseFloat(baseAmountStr);
+      if (!isNaN(num) && num >= 0) {
+        setParams(prev => ({ ...prev, baseAmount: num }));
+      }
+    }
+
+    const quoteAmountStr = searchParams.get('quoteAmount');
+    if (quoteAmountStr) {
+      const num = parseFloat(quoteAmountStr);
+      if (!isNaN(num) && num >= 0) {
+        setParams(prev => ({ ...prev, quoteAmount: num }));
+      }
+    }
+
+    const initialPriceStr = searchParams.get('initialPrice');
+    if (initialPriceStr) {
+      const num = parseFloat(initialPriceStr);
+      if (!isNaN(num) && num > 0) {
+        setParams(prev => ({ ...prev, initialPrice: num }));
+      }
+    }
+
+    const currentPriceStr = searchParams.get('currentPrice');
+    if (currentPriceStr) {
+      const num = parseFloat(currentPriceStr);
+      if (!isNaN(num) && num > 0) {
+        setCurrentPrice(num);
+      }
+    }
+
+    const autoFillStr = searchParams.get('autoFill');
+    if (autoFillStr === 'true') {
+      setAutoFill(true);
+    }
+
+    hasLoadedRef.current = true;
+  }, [searchParams]);
 
   const handlePricePercentageChange = (priceType: 'lower' | 'upper', value: string) => {
     const numValue = parseFloat(value);
@@ -719,9 +800,12 @@ export function DlmmSimulator() {
             <p className="text-sm text-muted-foreground mt-1">Visualize and analyze your liquidity positions</p>
           </div>
         </div>
-        <Button variant="outline" size="sm" onClick={handleClear} className="hover:bg-primary/10 transition-all duration-300">
-          <RefreshCcw className="mr-2 h-4 w-4" />Clear All
-        </Button>
+        <div className="flex gap-2">
+          <ShareButton params={params} currentPrice={currentPrice} selectedPool={selectedPool} autoFill={autoFill} disabled={!simulationParams} />
+          <Button variant="outline" size="sm" onClick={handleClear} className="hover:bg-primary/10 transition-all duration-300">
+            <RefreshCcw className="mr-2 h-4 w-4" />Clear All
+          </Button>
+        </div>
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -732,7 +816,7 @@ export function DlmmSimulator() {
               <CardDescription>Search and select a Meteora DLMM pool to simulate, or manually enter the position information below.</CardDescription>
             </CardHeader>
             <CardContent>
-              <PoolSelector onSelectPool={handlePoolSelect} selectedPool={selectedPool} />
+              <PoolSelector onSelectPool={handlePoolSelect} selectedPool={selectedPool} initialPoolAddress={initialPoolAddress} />
             </CardContent>
           </Card>
 
