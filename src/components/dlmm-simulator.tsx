@@ -583,12 +583,22 @@ export function DlmmSimulator() {
   const analysis = simulation?.analysis;
 
   const initialTotalValue = useMemo(() => {
-    if (!initialBins || initialBins.length === 0) return 0;
-    if (params.strategy === 'spot') {
-      return initialBins.reduce((sum, bin) => sum + bin.displayValue, 0);
-    }
-    return initialBins.reduce((sum, bin) => sum + bin.initialValueInQuote, 0);
-  }, [initialBins, params.strategy]);
+    if (!initialBins || initialBins.length === 0 || typeof params.initialPrice !== 'number') return 0;
+
+    const initialPrice = params.initialPrice;
+    // Calculate market value at initial price
+    return initialBins.reduce((sum, bin) => {
+      if (bin.initialAmount <= 0) return sum;
+
+      if (bin.initialTokenType === 'base') {
+        // Base tokens valued at initial market price
+        return sum + (bin.initialAmount * initialPrice);
+      } else {
+        // Quote tokens valued at face value
+        return sum + bin.initialAmount;
+      }
+    }, 0);
+  }, [initialBins, params.initialPrice]);
   
   
   // Position Value Change

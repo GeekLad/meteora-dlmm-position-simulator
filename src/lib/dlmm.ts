@@ -129,13 +129,15 @@ export function getInitialBins(params: SimulationParams): SimulatedBin[] {
   // Distribute Base
   if (baseAmount > 0 && baseBins.length > 0) {
     if (strategy === 'spot') {
+      // For spot: equal value per bin at the bin price
       const constant = quoteBins.length > 0 ? quoteAmount / quoteBins.length : 0;
       baseBins.forEach(bb => {
         const binToUpdate = bins.find(b => b.id === bb.id)!;
         const amount = constant / bb.price;
         binToUpdate.initialTokenType = 'base';
         binToUpdate.initialAmount = amount;
-        binToUpdate.initialValueInQuote = amount * bb.price;
+        // Each bin has equal value at its bin price
+        binToUpdate.initialValueInQuote = constant;
       });
     } else {
       let totalValueWeight = 0;
@@ -163,12 +165,13 @@ export function getInitialBins(params: SimulationParams): SimulatedBin[] {
       if (totalValueWeight > 0) {
           weights.forEach(({ id, weight, price }) => {
               const binToUpdate = bins.find(b => b.id === id)!;
-              // For base tokens, we distribute the total value, then find amount
+              // For base tokens, we distribute the total value (at initial price), then find amount
               const targetValue = totalValue * (weight / totalValueWeight);
               const amount = targetValue / price;
 
               binToUpdate.initialTokenType = 'base';
               binToUpdate.initialAmount = amount;
+              // Store the target value as initial value for this distribution
               binToUpdate.initialValueInQuote = targetValue;
           });
       }
@@ -179,13 +182,20 @@ export function getInitialBins(params: SimulationParams): SimulatedBin[] {
   // Normalization step to correct for floating point inaccuracies
   const calculatedBaseSum = bins.reduce((sum, bin) => bin.initialTokenType === 'base' ? sum + bin.initialAmount : sum, 0);
   const calculatedQuoteSum = bins.reduce((sum, bin) => bin.initialTokenType === 'quote' ? sum + bin.initialAmount : sum, 0);
-  
+
   if (baseAmount > 0 && calculatedBaseSum > 0) {
     const baseCorrectionFactor = baseAmount / calculatedBaseSum;
     bins.forEach(bin => {
       if (bin.initialTokenType === 'base') {
         bin.initialAmount *= baseCorrectionFactor;
-        bin.initialValueInQuote = bin.initialAmount * bin.price;
+        // Preserve the distribution's value structure
+        if (strategy === 'spot') {
+          // For spot: maintain equal value per bin at bin price
+          bin.initialValueInQuote = bin.initialAmount * bin.price;
+        } else {
+          // For bid-ask/curve: maintain market-price-based valuation
+          bin.initialValueInQuote *= baseCorrectionFactor;
+        }
       }
     });
   }
@@ -216,10 +226,10 @@ export function runSimulation(initialBins: SimulatedBin[], currentPrice: number,
       analysis: { totalValueInQuote: 0, totalBase: 0, totalQuote: 0, totalBins: 0, baseBins: 0, quoteBins: 0 }
     };
   }
-  
+
   const simulatedBins = initialBins.map(bin => {
     const simBin: SimulatedBin = JSON.parse(JSON.stringify(bin)); // Deep copy
-    
+
     if (simBin.initialAmount <= 0) {
       simBin.currentAmount = 0;
       simBin.currentValueInQuote = 0;
@@ -232,6 +242,7 @@ export function runSimulation(initialBins: SimulatedBin[], currentPrice: number,
     if (currentPrice > simBin.price) { // Price moved above the bin, should be quote
         simBin.currentTokenType = 'quote';
         if (simBin.initialTokenType === 'base') {
+            // Base converted to quote at bin price
             simBin.currentAmount = simBin.initialAmount * simBin.price;
         } else {
             simBin.currentAmount = simBin.initialAmount;
@@ -239,16 +250,16 @@ export function runSimulation(initialBins: SimulatedBin[], currentPrice: number,
     } else { // Price at or below the bin, should be base
         simBin.currentTokenType = 'base';
         if (simBin.initialTokenType === 'quote') {
+            // Quote converted to base at bin price
             simBin.currentAmount = simBin.initialAmount / simBin.price;
         } else {
             simBin.currentAmount = simBin.initialAmount;
         }
     }
-    
-    // Update value based on current state
+
+    // Value the current holdings at current market price
     if (simBin.currentTokenType === 'base') {
-        // Use bin price for base tokens to maintain value consistency
-        simBin.currentValueInQuote = simBin.currentAmount * simBin.price;
+        simBin.currentValueInQuote = simBin.currentAmount * currentPrice;
     } else {
         simBin.currentValueInQuote = simBin.currentAmount;
     }
