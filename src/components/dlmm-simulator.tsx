@@ -801,7 +801,6 @@ export function DlmmSimulator() {
     setLastAutoFilledToken(null);
     setLowerPricePercentage('');
     setUpperPricePercentage('');
-    setClearKey(prev => prev + 1);
   };
   
   const handleInitialPriceChange = (newInitialPrice: number) => {
@@ -814,9 +813,6 @@ export function DlmmSimulator() {
   }
 
   const handlePoolSelect = (pool: MeteoraPair) => {
-    console.log(`[DEBUG] Pool selected: ${pool.name}, address: ${pool.address}`);
-    console.log(`[DEBUG] Pool data: current_price=${pool.current_price}, bin_step=${pool.bin_step}, decimals_x=${pool.decimals_x}, decimals_y=${pool.decimals_y}`);
-
     setSelectedPool(pool);
 
     // Update token symbols
@@ -833,19 +829,16 @@ export function DlmmSimulator() {
       // Use API-provided decimals, but still determine if decimal adjustments should be applied
       poolBaseDecimals = pool.decimals_x;
       poolQuoteDecimals = pool.decimals_y;
-      console.log(`[DEBUG] Using API decimals: base=${poolBaseDecimals}, quote=${poolQuoteDecimals}`);
 
       // Still reverse engineer to determine if decimal adjustments are needed
       const reverseEngineered = reverseEngineerDecimals(pool.current_price, pool.bin_step, pool.mint_x, pool.mint_y);
       applyDecimalAdjustment = reverseEngineered.applyDecimalAdjustment;
-      console.log(`[DEBUG] Determined applyAdjustment=${applyDecimalAdjustment} for API decimals`);
     } else {
       // Reverse engineer decimals from API price
       const reverseEngineered = reverseEngineerDecimals(pool.current_price, pool.bin_step, pool.mint_x, pool.mint_y);
       poolBaseDecimals = reverseEngineered.baseDecimals;
       poolQuoteDecimals = reverseEngineered.quoteDecimals;
       applyDecimalAdjustment = reverseEngineered.applyDecimalAdjustment;
-      console.log(`[DEBUG] Reverse engineered decimals: base=${poolBaseDecimals}, quote=${poolQuoteDecimals}, applyAdjustment=${applyDecimalAdjustment}`);
     }
 
     // Update the component state with the determined decimals
@@ -863,8 +856,6 @@ export function DlmmSimulator() {
     const lowerBinId = currentBinId - 34;
     const upperBinId = currentBinId + 34;
 
-    console.log(`[DEBUG] Bin calculations: currentBinId=${currentBinId}, lowerBinId=${lowerBinId}, upperBinId=${upperBinId}`);
-
     // Get the exact bin prices - these will be the boundaries
     const lowerPrice = getPriceFromId(lowerBinId, pool.bin_step, poolBaseDecimals, poolQuoteDecimals, applyDecimalAdjustment);
     const upperPrice = getPriceFromId(upperBinId, pool.bin_step, poolBaseDecimals, poolQuoteDecimals, applyDecimalAdjustment);
@@ -873,16 +864,11 @@ export function DlmmSimulator() {
     const exactBinPrice = getPriceFromId(currentBinId, pool.bin_step, poolBaseDecimals, poolQuoteDecimals, applyDecimalAdjustment);
     const priceDifference = Math.abs(pool.current_price - exactBinPrice);
 
-    console.log(`[DEBUG] Price validation: API current_price=${pool.current_price}, exact bin price=${exactBinPrice}, difference=${priceDifference}`);
-
     // Check a few neighboring bins to see their prices
     for (let offset = -2; offset <= 2; offset++) {
       const binId = currentBinId + offset;
       const binPrice = getPriceFromId(binId, pool.bin_step, poolBaseDecimals, poolQuoteDecimals, applyDecimalAdjustment);
-      console.log(`[DEBUG] Bin ${binId}: price=${binPrice}`);
     }
-
-    console.log(`[DEBUG] Price range: lowerPrice=${lowerPrice}, upperPrice=${upperPrice}`);
 
     // Helper function to round price to decimals
     const roundToDecimals = (price: number): number => {

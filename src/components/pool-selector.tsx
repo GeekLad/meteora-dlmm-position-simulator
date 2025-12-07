@@ -32,6 +32,7 @@ export function PoolSelector({ onSelectPool, selectedPool, initialPoolAddress }:
     onSelectPool(pool);
     // Clear search after selection
     setSearchTerm('');
+    setBinStepFilter('all');
   };
 
   // Debounce search term

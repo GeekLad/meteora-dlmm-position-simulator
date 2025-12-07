@@ -228,7 +228,6 @@ export function reverseEngineerDecimals(
 
   // If we have both decimals from addresses, use them directly
   if (TOKEN_DECIMALS_BY_ADDRESS[mintX] !== undefined && TOKEN_DECIMALS_BY_ADDRESS[mintY] !== undefined) {
-    console.log(`[DEBUG] Using known token decimals: base=${baseDecimalsFromAddress} (${mintX}), quote=${quoteDecimalsFromAddress} (${mintY})`);
     return {
       baseDecimals: baseDecimalsFromAddress,
       quoteDecimals: quoteDecimalsFromAddress,
