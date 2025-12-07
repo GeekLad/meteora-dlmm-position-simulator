@@ -1117,11 +1117,13 @@ export function DlmmSimulator() {
                         value={lowerPricePercentage}
                         onChange={e => handlePricePercentageChange('lower', e.target.value)}
                         onBlur={() => handlePercentageBlur('lower')}
-                        placeholder="%"
+                        placeholder="Min %"
                         step="0.01"
                         className="pr-6 transition-all duration-300 focus:ring-2 focus:ring-primary/50"
                       />
-                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm pointer-events-none">%</span>
+                      {lowerPricePercentage !== '' && (
+                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm pointer-events-none">%</span>
+                      )}
                     </div>
                   </div>
                   <div className="flex gap-2">
@@ -1141,11 +1143,13 @@ export function DlmmSimulator() {
                         value={upperPricePercentage}
                         onChange={e => handlePricePercentageChange('upper', e.target.value)}
                         onBlur={() => handlePercentageBlur('upper')}
-                        placeholder="%"
+                        placeholder="Max %"
                         step="0.01"
                         className="pr-6 transition-all duration-300 focus:ring-2 focus:ring-primary/50"
                       />
-                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm pointer-events-none">%</span>
+                      {upperPricePercentage !== '' && (
+                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm pointer-events-none">%</span>
+                      )}
                     </div>
                   </div>
                 </div>
