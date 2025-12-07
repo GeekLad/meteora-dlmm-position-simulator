@@ -95,12 +95,15 @@ export function DlmmSimulator() {
   const [lowerPriceInput, setLowerPriceInput] = useState<string>('');
   const [upperPriceInput, setUpperPriceInput] = useState<string>('');
   const [initialPriceInput, setInitialPriceInput] = useState<string>('');
+  const [baseAmountInput, setBaseAmountInput] = useState<string>('');
+  const [quoteAmountInput, setQuoteAmountInput] = useState<string>('');
   const [initialPoolAddress, setInitialPoolAddress] = useState<string | null>(null);
   const [clearKey, setClearKey] = useState(0);
   const searchParams = useSearchParams();
   const hasLoadedRef = useRef(false);
   const isEditingPercentageRef = useRef<{ lower: boolean; upper: boolean }>({ lower: false, upper: false });
   const isEditingPriceRef = useRef<{ lower: boolean; upper: boolean; initial: boolean }>({ lower: false, upper: false, initial: false });
+  const isEditingAmountRef = useRef<{ base: boolean; quote: boolean }>({ base: false, quote: false });
 
   const simulationParams = useMemo(() => {
     const allParamsSet =
@@ -192,6 +195,19 @@ export function DlmmSimulator() {
       setInitialPriceInput(params.initialPrice === '' ? '' : params.initialPrice.toFixed(significantDecimals));
     }
   }, [params.initialPrice, quoteDecimals]);
+
+  // Sync amount input fields when params change (but not when user is editing)
+  useEffect(() => {
+    if (!isEditingAmountRef.current.base) {
+      setBaseAmountInput(params.baseAmount === '' ? '' : String(params.baseAmount));
+    }
+  }, [params.baseAmount]);
+
+  useEffect(() => {
+    if (!isEditingAmountRef.current.quote) {
+      setQuoteAmountInput(params.quoteAmount === '' ? '' : String(params.quoteAmount));
+    }
+  }, [params.quoteAmount]);
 
   // Auto-fill when toggle is turned on
   useEffect(() => {
@@ -600,7 +616,7 @@ export function DlmmSimulator() {
   };
 
   const handleParamChange = (field: keyof PartialSimulationParams, value: string) => {
-    // Mark that we're editing this price field and update input state
+    // Mark that we're editing this field and update input state
     if (field === 'lowerPrice') {
       isEditingPriceRef.current.lower = true;
       setLowerPriceInput(value);
@@ -612,6 +628,12 @@ export function DlmmSimulator() {
     } else if (field === 'initialPrice') {
       isEditingPriceRef.current.initial = true;
       setInitialPriceInput(value);
+    } else if (field === 'baseAmount') {
+      isEditingAmountRef.current.base = true;
+      setBaseAmountInput(value);
+    } else if (field === 'quoteAmount') {
+      isEditingAmountRef.current.quote = true;
+      setQuoteAmountInput(value);
     }
 
     const numValue = parseFloat(value);
@@ -786,6 +808,15 @@ export function DlmmSimulator() {
     setParams(prev => ({ ...prev, strategy: value }));
   }
 
+  const handleAmountBlur = (field: 'baseAmount' | 'quoteAmount') => {
+    // Clear the editing flag
+    if (field === 'baseAmount') {
+      isEditingAmountRef.current.base = false;
+    } else {
+      isEditingAmountRef.current.quote = false;
+    }
+  };
+
   const handleClear = () => {
     setParams(defaultParams);
     setCurrentPrice(defaultParams.initialPrice);
@@ -801,6 +832,8 @@ export function DlmmSimulator() {
     setLastAutoFilledToken(null);
     setLowerPricePercentage('');
     setUpperPricePercentage('');
+    setBaseAmountInput('');
+    setQuoteAmountInput('');
   };
   
   const handleInitialPriceChange = (newInitialPrice: number) => {
@@ -1154,11 +1187,25 @@ export function DlmmSimulator() {
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="baseAmount" className="text-sm font-medium">{tokenSymbols.base} Token Amount</Label>
-                <Input id="baseAmount" type="text" value={formatTokenAmountForDisplay(params.baseAmount, baseDecimals)} onChange={e => handleParamChange('baseAmount', e.target.value)} className="transition-all duration-300 focus:ring-2 focus:ring-primary/50" />
+                <Input
+                  id="baseAmount"
+                  type="text"
+                  value={baseAmountInput}
+                  onChange={e => handleParamChange('baseAmount', e.target.value)}
+                  onBlur={() => handleAmountBlur('baseAmount')}
+                  className="transition-all duration-300 focus:ring-2 focus:ring-primary/50"
+                />
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="quoteAmount" className="text-sm font-medium">{tokenSymbols.quote} Token Amount</Label>
-                <Input id="quoteAmount" type="text" value={formatTokenAmountForDisplay(params.quoteAmount, quoteDecimals)} onChange={e => handleParamChange('quoteAmount', e.target.value)} className="transition-all duration-300 focus:ring-2 focus:ring-primary/50" />
+                <Input
+                  id="quoteAmount"
+                  type="text"
+                  value={quoteAmountInput}
+                  onChange={e => handleParamChange('quoteAmount', e.target.value)}
+                  onBlur={() => handleAmountBlur('quoteAmount')}
+                  className="transition-all duration-300 focus:ring-2 focus:ring-primary/50"
+                />
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="initialPrice" className="text-sm font-medium">Initial Price</Label>

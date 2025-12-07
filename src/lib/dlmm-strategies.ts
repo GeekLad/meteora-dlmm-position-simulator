@@ -138,9 +138,19 @@ export function weightsToAmounts(
   // Distribute base tokens
   if (totalBaseWeight > 0 && totalBaseAmount > 0) {
     if (strategy === 'spot') {
-      // Spot strategy: equal amount per bin (equal USDC value when converted at bin price)
-      // Calculate the constant value that each bin should have
-      const constantValue = quoteBins.length > 0 ? totalQuoteAmount / quoteBins.length : 0;
+      // Spot strategy: equal value per bin
+      // For two-sided positions: match the quote bin value
+      // For one-sided base positions: distribute base tokens equally by value
+      let constantValue: number;
+
+      if (quoteBins.length > 0 && totalQuoteAmount > 0) {
+        // Two-sided: match quote bin value
+        constantValue = totalQuoteAmount / quoteBins.length;
+      } else {
+        // One-sided base position: calculate value from base tokens
+        // Total value divided by number of base bins
+        constantValue = (totalBaseAmount * initialPrice) / baseBins.length;
+      }
 
       baseBins.forEach(id => {
         const binPrice = binPrices.get(id)!;
