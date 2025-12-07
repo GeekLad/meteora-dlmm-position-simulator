@@ -57,24 +57,26 @@ export function calculateStrategyWeights(
     }
 
     case 'curve': {
-      // Curve: Inverse linear distribution (concentrated at edges)
-      // Weight decreases as bins get closer to the active price
+      // Curve: Inverse of bid-ask (concentrated away from active price)
+      // Weight increases as bins get closer to the active price (opposite of bid-ask)
 
-      const quoteBinsCount = activeBinId - minBinId;
+      const quoteBinsCount = activeBinId - minBinId + 1; // Include active bin
       const baseBinsCount = maxBinId - activeBinId;
 
-      // Quote side
+      // Quote side (includes active bin)
+      // Inverse of bid-ask: minBinId has lowest weight, activeBinId has highest
       for (let id = minBinId; id <= activeBinId; id++) {
         const distance = activeBinId - id;
-        const weight = quoteBinsCount > 0 ? quoteBinsCount - distance : 1;
-        weights.set(id, Math.max(weight, 1));
+        const weight = quoteBinsCount - distance;
+        weights.set(id, weight);
       }
 
       // Base side
+      // Inverse of bid-ask: bins closer to maxBinId have lower weight
       for (let id = activeBinId + 1; id <= maxBinId; id++) {
         const distance = id - activeBinId;
-        const weight = baseBinsCount > 0 ? baseBinsCount - distance : 1;
-        weights.set(id, Math.max(weight, 1));
+        const weight = baseBinsCount - distance + 1;
+        weights.set(id, weight);
       }
       break;
     }
