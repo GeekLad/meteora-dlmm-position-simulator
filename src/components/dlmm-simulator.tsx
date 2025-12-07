@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { getInitialBins, runSimulation, getIdFromPrice, getPriceFromId, type SimulationParams, type Analysis, type SimulatedBin, type Strategy } from "@/lib/dlmm";
 import { LiquidityChart } from "@/components/liquidity-chart";
 import { Logo } from "@/components/icons";
-import { Layers, CandlestickChart, Coins, ChevronsLeftRight, Footprints, RefreshCcw, MoveHorizontal } from "lucide-react";
+import { Layers, CandlestickChart, Coins, ChevronsLeftRight, Footprints, RefreshCcw, MoveHorizontal, ExternalLink } from "lucide-react";
 import { formatNumber } from "@/lib/utils";
 import { RadioGroup, RadioGroupItem } from "./ui/radio-group";
 import { Button } from "./ui/button";
@@ -102,10 +102,15 @@ export function DlmmSimulator() {
   const [lastAutoFilledToken, setLastAutoFilledToken] = useState<'base' | 'quote' | null>(null);
   const [lowerPricePercentage, setLowerPricePercentage] = useState<number | ''>('');
   const [upperPricePercentage, setUpperPricePercentage] = useState<number | ''>('');
+  const [lowerPriceInput, setLowerPriceInput] = useState<string>('');
+  const [upperPriceInput, setUpperPriceInput] = useState<string>('');
+  const [initialPriceInput, setInitialPriceInput] = useState<string>('');
   const [initialPoolAddress, setInitialPoolAddress] = useState<string | null>(null);
   const [clearKey, setClearKey] = useState(0);
   const searchParams = useSearchParams();
   const hasLoadedRef = useRef(false);
+  const isEditingPercentageRef = useRef<{ lower: boolean; upper: boolean }>({ lower: false, upper: false });
+  const isEditingPriceRef = useRef<{ lower: boolean; upper: boolean; initial: boolean }>({ lower: false, upper: false, initial: false });
 
   const simulationParams = useMemo(() => {
     const allParamsSet =
@@ -124,7 +129,7 @@ export function DlmmSimulator() {
       quoteDecimals,
       applyDecimalAdjustment,
     };
-  }, [params, baseDecimals, quoteDecimals]);
+  }, [params, baseDecimals, quoteDecimals, applyDecimalAdjustment]);
 
 
   useEffect(() => {
@@ -157,17 +162,17 @@ export function DlmmSimulator() {
   // Update price percentages when prices or initial price change
   useEffect(() => {
     if (typeof params.initialPrice === 'number' && params.initialPrice > 0) {
-      if (typeof params.lowerPrice === 'number') {
+      if (typeof params.lowerPrice === 'number' && !isEditingPercentageRef.current.lower) {
         const lowerPct = ((params.lowerPrice - params.initialPrice) / params.initialPrice) * 100;
         setLowerPricePercentage(Number(lowerPct.toFixed(2)));
-      } else {
+      } else if (typeof params.lowerPrice !== 'number') {
         setLowerPricePercentage('');
       }
 
-      if (typeof params.upperPrice === 'number') {
+      if (typeof params.upperPrice === 'number' && !isEditingPercentageRef.current.upper) {
         const upperPct = ((params.upperPrice - params.initialPrice) / params.initialPrice) * 100;
         setUpperPricePercentage(Number(upperPct.toFixed(2)));
-      } else {
+      } else if (typeof params.upperPrice !== 'number') {
         setUpperPricePercentage('');
       }
     } else {
@@ -175,6 +180,28 @@ export function DlmmSimulator() {
       setUpperPricePercentage('');
     }
   }, [params.lowerPrice, params.upperPrice, params.initialPrice]);
+
+  // Sync price input fields when params change (but not when user is editing)
+  useEffect(() => {
+    if (!isEditingPriceRef.current.lower) {
+      const significantDecimals = Math.max(quoteDecimals, 6);
+      setLowerPriceInput(params.lowerPrice === '' ? '' : params.lowerPrice.toFixed(significantDecimals));
+    }
+  }, [params.lowerPrice, quoteDecimals]);
+
+  useEffect(() => {
+    if (!isEditingPriceRef.current.upper) {
+      const significantDecimals = Math.max(quoteDecimals, 6);
+      setUpperPriceInput(params.upperPrice === '' ? '' : params.upperPrice.toFixed(significantDecimals));
+    }
+  }, [params.upperPrice, quoteDecimals]);
+
+  useEffect(() => {
+    if (!isEditingPriceRef.current.initial) {
+      const significantDecimals = Math.max(quoteDecimals, 6);
+      setInitialPriceInput(params.initialPrice === '' ? '' : params.initialPrice.toFixed(significantDecimals));
+    }
+  }, [params.initialPrice, quoteDecimals]);
 
   // Auto-fill when toggle is turned on
   useEffect(() => {
@@ -487,23 +514,42 @@ export function DlmmSimulator() {
     hasLoadedRef.current = true;
   }, [searchParams]);
 
+  const roundPriceToDecimals = (price: number): number => {
+    // Price = quote/base, so the precision depends on both token decimals
+    // We'll use the quote decimals as the primary precision since price is denominated in quote
+    const significantDecimals = Math.max(quoteDecimals, 6); // At least 6 decimals for precision
+    const multiplier = Math.pow(10, significantDecimals);
+    return Math.floor(price * multiplier) / multiplier;
+  };
+
+  const formatTokenAmountForDisplay = (amount: number | '', decimals: number): string => {
+    if (amount === '') return '';
+    // Show up to the token's decimal places, but at least 2 decimals
+    const displayDecimals = Math.max(decimals, 2);
+    return amount.toFixed(displayDecimals);
+  };
+
   const handlePricePercentageChange = (priceType: 'lower' | 'upper', value: string) => {
     const numValue = parseFloat(value);
     const finalValue = value === '' ? '' : numValue;
 
+    // Mark that we're editing this percentage field
     if (priceType === 'lower') {
+      isEditingPercentageRef.current.lower = true;
       setLowerPricePercentage(finalValue);
     } else {
+      isEditingPercentageRef.current.upper = true;
       setUpperPricePercentage(finalValue);
     }
 
-    // Calculate absolute price from percentage
+    // Calculate absolute price from percentage (no rounding yet - that happens on blur)
     if (typeof finalValue === 'number' && typeof params.initialPrice === 'number' && params.initialPrice > 0) {
       const newPrice = params.initialPrice * (1 + finalValue / 100);
+
       if (priceType === 'lower') {
-        handleParamChange('lowerPrice', newPrice.toString());
+        setParams(prev => ({ ...prev, lowerPrice: newPrice }));
       } else {
-        handleParamChange('upperPrice', newPrice.toString());
+        setParams(prev => ({ ...prev, upperPrice: newPrice }));
       }
     } else if (value === '') {
       // Clear the price when percentage is cleared
@@ -515,13 +561,83 @@ export function DlmmSimulator() {
     }
   };
 
-  const handleParamChange = (field: keyof PartialSimulationParams, value: string) => {
-    const numValue = parseFloat(value);
-    const finalValue = value === '' ? '' : numValue;
+  const handlePercentageBlur = (priceType: 'lower' | 'upper') => {
+    // Clear the editing flag
+    if (priceType === 'lower') {
+      isEditingPercentageRef.current.lower = false;
+    } else {
+      isEditingPercentageRef.current.upper = false;
+    }
 
+    const field = priceType === 'lower' ? 'lowerPrice' : 'upperPrice';
+    const currentValue = params[field];
+
+    if (typeof currentValue !== 'number' || typeof params.binStep !== 'number' || params.binStep <= 0) {
+      return;
+    }
+
+    // Round to nearest valid bin price, then round to token decimals
+    const binId = getIdFromPrice(currentValue, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+    const roundedPrice = getPriceFromId(binId, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+
+    let finalValue: number;
+
+    // Validate that the rounded price maintains valid range (upperPrice > lowerPrice)
+    if (field === 'lowerPrice') {
+      // Ensure lowerPrice stays below upperPrice
+      if (typeof params.upperPrice === 'number' && roundedPrice >= params.upperPrice) {
+        // Find the bin just below upperPrice
+        const upperBinId = getIdFromPrice(params.upperPrice, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+        const safeLowerBinId = upperBinId - 1;
+        finalValue = roundPriceToDecimals(
+          getPriceFromId(safeLowerBinId, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment)
+        );
+      } else {
+        finalValue = roundPriceToDecimals(roundedPrice);
+      }
+    } else {
+      // field === 'upperPrice'
+      // Ensure upperPrice stays above lowerPrice
+      if (typeof params.lowerPrice === 'number' && roundedPrice <= params.lowerPrice) {
+        // Find the bin just above lowerPrice
+        const lowerBinId = getIdFromPrice(params.lowerPrice, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+        const safeUpperBinId = lowerBinId + 1;
+        finalValue = roundPriceToDecimals(
+          getPriceFromId(safeUpperBinId, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment)
+        );
+      } else {
+        finalValue = roundPriceToDecimals(roundedPrice);
+      }
+    }
+
+    setParams(prev => ({ ...prev, [field]: finalValue }));
+  };
+
+  const handleParamChange = (field: keyof PartialSimulationParams, value: string) => {
+    // Mark that we're editing this price field and update input state
+    if (field === 'lowerPrice') {
+      isEditingPriceRef.current.lower = true;
+      setLowerPriceInput(value);
+      isEditingPercentageRef.current.lower = false;
+    } else if (field === 'upperPrice') {
+      isEditingPriceRef.current.upper = true;
+      setUpperPriceInput(value);
+      isEditingPercentageRef.current.upper = false;
+    } else if (field === 'initialPrice') {
+      isEditingPriceRef.current.initial = true;
+      setInitialPriceInput(value);
+    }
+
+    const numValue = parseFloat(value);
+    const finalValue: number | '' = value === '' ? '' : numValue;
+
+    // For price fields, just store the raw value without rounding
+    // Rounding will happen on blur
     if (field === 'initialPrice') {
       setParams(prev => ({ ...prev, initialPrice: finalValue }));
       setCurrentPrice(finalValue);
+    } else if (field === 'lowerPrice' || field === 'upperPrice') {
+      setParams(prev => ({ ...prev, [field]: finalValue }));
     } else if (autoFill && (field === 'baseAmount' || field === 'quoteAmount')) {
       // Auto-fill the other token amount for flat distribution
       const newParams = { ...params, [field]: finalValue };
@@ -621,6 +737,67 @@ export function DlmmSimulator() {
       setParams(newParams);
     } else {
       setParams(prev => ({ ...prev, [field]: finalValue }));
+    }
+  };
+
+  const handlePriceBlur = (field: 'lowerPrice' | 'upperPrice' | 'initialPrice') => {
+    // Clear the editing flag
+    if (field === 'lowerPrice') {
+      isEditingPriceRef.current.lower = false;
+    } else if (field === 'upperPrice') {
+      isEditingPriceRef.current.upper = false;
+    } else if (field === 'initialPrice') {
+      isEditingPriceRef.current.initial = false;
+    }
+
+    const currentValue = params[field];
+    if (typeof currentValue !== 'number' || typeof params.binStep !== 'number' || params.binStep <= 0) {
+      return;
+    }
+
+    // Auto-round lower/upper prices to nearest valid bin price, then round to token decimals
+    if (field === 'lowerPrice' || field === 'upperPrice') {
+      const binId = getIdFromPrice(currentValue, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+      const roundedPrice = getPriceFromId(binId, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+
+      let finalValue: number;
+
+      // Validate that the rounded price maintains valid range (upperPrice > lowerPrice)
+      if (field === 'lowerPrice') {
+        // Ensure lowerPrice stays below upperPrice
+        if (typeof params.upperPrice === 'number' && roundedPrice >= params.upperPrice) {
+          // Find the bin just below upperPrice
+          const upperBinId = getIdFromPrice(params.upperPrice, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+          const safeLowerBinId = upperBinId - 1;
+          finalValue = roundPriceToDecimals(
+            getPriceFromId(safeLowerBinId, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment)
+          );
+        } else {
+          finalValue = roundPriceToDecimals(roundedPrice);
+        }
+      } else {
+        // field === 'upperPrice'
+        // Ensure upperPrice stays above lowerPrice
+        if (typeof params.lowerPrice === 'number' && roundedPrice <= params.lowerPrice) {
+          // Find the bin just above lowerPrice
+          const lowerBinId = getIdFromPrice(params.lowerPrice, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+          const safeUpperBinId = lowerBinId + 1;
+          finalValue = roundPriceToDecimals(
+            getPriceFromId(safeUpperBinId, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment)
+          );
+        } else {
+          finalValue = roundPriceToDecimals(roundedPrice);
+        }
+      }
+
+      setParams(prev => ({ ...prev, [field]: finalValue }));
+    } else if (field === 'initialPrice') {
+      // Round initial price to nearest bin
+      const binId = getIdFromPrice(currentValue, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+      const roundedPrice = getPriceFromId(binId, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+      const finalValue = roundPriceToDecimals(roundedPrice);
+      setParams(prev => ({ ...prev, initialPrice: finalValue }));
+      setCurrentPrice(finalValue);
     }
   };
 
@@ -726,13 +903,25 @@ export function DlmmSimulator() {
 
     console.log(`[DEBUG] Price range: lowerPrice=${lowerPrice}, upperPrice=${upperPrice}`);
 
+    // Helper function to round price to decimals
+    const roundToDecimals = (price: number): number => {
+      const significantDecimals = Math.max(poolQuoteDecimals, 6);
+      const multiplier = Math.pow(10, significantDecimals);
+      return Math.floor(price * multiplier) / multiplier;
+    };
+
+    // Round all prices to appropriate decimal precision
+    const roundedInitialPrice = roundToDecimals(exactBinPrice);
+    const roundedLowerPrice = roundToDecimals(lowerPrice);
+    const roundedUpperPrice = roundToDecimals(upperPrice);
+
     // Update simulation params
     setParams(prev => ({
       ...prev,
       binStep: pool.bin_step,
-      initialPrice: exactBinPrice, // Use the exact bin price instead of API price
-      lowerPrice: lowerPrice,
-      upperPrice: upperPrice,
+      initialPrice: roundedInitialPrice,
+      lowerPrice: roundedLowerPrice,
+      upperPrice: roundedUpperPrice,
     }));
 
     // Update current price to match the pool
@@ -957,11 +1146,11 @@ export function DlmmSimulator() {
                   <div className="flex gap-2">
                     <Input
                       id="lowerPrice"
-                      type="number"
+                      type="text"
                       placeholder="Min Price"
-                      value={params.lowerPrice}
+                      value={lowerPriceInput}
                       onChange={e => handleParamChange('lowerPrice', e.target.value)}
-                      step="0.000001"
+                      onBlur={() => handlePriceBlur('lowerPrice')}
                       className="flex-1 transition-all duration-300 focus:ring-2 focus:ring-primary/50"
                     />
                     <div className="relative w-24">
@@ -970,6 +1159,7 @@ export function DlmmSimulator() {
                         type="number"
                         value={lowerPricePercentage}
                         onChange={e => handlePricePercentageChange('lower', e.target.value)}
+                        onBlur={() => handlePercentageBlur('lower')}
                         placeholder="%"
                         step="0.01"
                         className="pr-6 transition-all duration-300 focus:ring-2 focus:ring-primary/50"
@@ -980,11 +1170,11 @@ export function DlmmSimulator() {
                   <div className="flex gap-2">
                     <Input
                       id="upperPrice"
-                      type="number"
+                      type="text"
                       placeholder="Max Price"
-                      value={params.upperPrice}
+                      value={upperPriceInput}
                       onChange={e => handleParamChange('upperPrice', e.target.value)}
-                      step="0.000001"
+                      onBlur={() => handlePriceBlur('upperPrice')}
                       className="flex-1 transition-all duration-300 focus:ring-2 focus:ring-primary/50"
                     />
                     <div className="relative w-24">
@@ -993,6 +1183,7 @@ export function DlmmSimulator() {
                         type="number"
                         value={upperPricePercentage}
                         onChange={e => handlePricePercentageChange('upper', e.target.value)}
+                        onBlur={() => handlePercentageBlur('upper')}
                         placeholder="%"
                         step="0.01"
                         className="pr-6 transition-all duration-300 focus:ring-2 focus:ring-primary/50"
@@ -1008,20 +1199,20 @@ export function DlmmSimulator() {
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="baseAmount" className="text-sm font-medium">{tokenSymbols.base} Token Amount</Label>
-                <Input id="baseAmount" type="number" value={params.baseAmount} onChange={e => handleParamChange('baseAmount', e.target.value)} className="transition-all duration-300 focus:ring-2 focus:ring-primary/50" />
+                <Input id="baseAmount" type="text" value={formatTokenAmountForDisplay(params.baseAmount, baseDecimals)} onChange={e => handleParamChange('baseAmount', e.target.value)} className="transition-all duration-300 focus:ring-2 focus:ring-primary/50" />
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="quoteAmount" className="text-sm font-medium">{tokenSymbols.quote} Token Amount</Label>
-                <Input id="quoteAmount" type="number" value={params.quoteAmount} onChange={e => handleParamChange('quoteAmount', e.target.value)} className="transition-all duration-300 focus:ring-2 focus:ring-primary/50" />
+                <Input id="quoteAmount" type="text" value={formatTokenAmountForDisplay(params.quoteAmount, quoteDecimals)} onChange={e => handleParamChange('quoteAmount', e.target.value)} className="transition-all duration-300 focus:ring-2 focus:ring-primary/50" />
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="initialPrice" className="text-sm font-medium">Initial Price</Label>
                 <Input
                   id="initialPrice"
-                  type="number"
-                  value={params.initialPrice}
+                  type="text"
+                  value={initialPriceInput}
                   onChange={e => handleParamChange('initialPrice', e.target.value)}
-                  step="0.000001"
+                  onBlur={() => handlePriceBlur('initialPrice')}
                   className="transition-all duration-300 focus:ring-2 focus:ring-primary/50"
                 />
               </div>
@@ -1036,7 +1227,20 @@ export function DlmmSimulator() {
                 <div className="p-2 rounded-lg bg-primary/10">
                   <CandlestickChart className="h-4 w-4 text-primary" />
                 </div>
-                {selectedPool && params.binStep ? `Liquidity Distribution for ${selectedPool.name} ${params.binStep} Bin Step` : 'Liquidity Distribution'}
+                <span>
+                  {selectedPool && params.binStep ? `Liquidity Distribution for ${selectedPool.name} ${params.binStep} Bin Step` : 'Liquidity Distribution'}
+                </span>
+                {selectedPool && (
+                  <a
+                    href={`https://app.meteora.ag/dlmm/${selectedPool.address}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="p-2 rounded-lg hover:bg-primary/10 transition-colors"
+                    title="View on Meteora"
+                  >
+                    <ExternalLink className="h-4 w-4 text-primary" />
+                  </a>
+                )}
               </CardTitle>
             </CardHeader>
             <CardContent className="flex-grow flex flex-col justify-center gap-4 pt-8">

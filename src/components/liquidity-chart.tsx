@@ -42,6 +42,24 @@ const FormattedNumber = ({ value, maximumFractionDigits }: { value: number; maxi
   return <>{formatNumber(value, maximumFractionDigits)}</>;
 };
 
+const ShortFormattedNumber = ({ value }: { value: number }) => {
+  if (value > 0 && value < 0.001) {
+    const s = value.toFixed(20);
+    const firstDigitIndex = s.search(/[1-9]/);
+    const numZeros = firstDigitIndex - 2;
+    if (numZeros >= 3) {
+      const remainingDigits = s.substring(firstDigitIndex, firstDigitIndex + 3);
+      return (
+        <>
+          0.0<sub>{numZeros}</sub>{remainingDigits}
+        </>
+      );
+    }
+  }
+  // For larger numbers, show fewer digits
+  return <>{formatNumber(value, 2)}</>;
+};
+
 export function LiquidityChart({
      bins,
      simulatedBins,
@@ -283,12 +301,18 @@ export function LiquidityChart({
       }
     });
 
+    // Calculate delay per bin to keep total animation time consistent
+    // Target total animation time: 300ms
+    // Maximum distance from center is half the bins (radiating outward)
+    const maxDistance = Math.ceil(binsToDisplay.length / 2);
+    const delayPerBin = maxDistance > 0 ? 300 / maxDistance : 3;
+
     return binsToDisplay.map((bin, index) => {
       // Calculate distance from current price bin
       const distance = Math.abs(index - closestIndex);
       return {
         ...bin,
-        animationDelay: distance * 3 // 3ms per bin distance from current price
+        animationDelay: distance * delayPerBin
       };
     });
   }, [binsToDisplay, currentPrice]);
@@ -437,7 +461,7 @@ export function LiquidityChart({
         <div className="relative w-full h-4 mt-2 mb-2">
           {priceTicks.map((tick, i) => (
             <div key={i} className="absolute text-xs text-muted-foreground" style={{ left: `${tick.position}%`, transform: 'translateX(-50%)' }}>
-              <FormattedNumber value={tick.price} maximumFractionDigits={4} />
+              <ShortFormattedNumber value={tick.price} />
             </div>
           ))}
         </div>
