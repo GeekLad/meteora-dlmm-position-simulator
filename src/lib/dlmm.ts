@@ -222,7 +222,7 @@ export function runSimulation(
     }
 
     // Determine current token type based on price
-    if (currentPrice > simBin.price) { // Price moved above the bin, should be quote
+    if (currentPrice >= simBin.price) { // Price at or above the bin, should be quote
         simBin.currentTokenType = 'quote';
         if (simBin.initialTokenType === 'base') {
             // Base converted to quote at bin price
@@ -230,7 +230,7 @@ export function runSimulation(
         } else {
             simBin.currentAmount = simBin.initialAmount;
         }
-    } else { // Price at or below the bin, should be base
+    } else { // Price below the bin, should be base
         simBin.currentTokenType = 'base';
         if (simBin.initialTokenType === 'quote') {
             // Quote converted to base at bin price
