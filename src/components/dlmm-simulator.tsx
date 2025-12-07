@@ -877,18 +877,14 @@ export function DlmmSimulator() {
       return Math.floor(price * multiplier) / multiplier;
     };
 
-    // Round all prices to appropriate decimal precision
-    const roundedInitialPrice = roundToDecimals(exactBinPrice);
-    const roundedLowerPrice = roundToDecimals(lowerPrice);
-    const roundedUpperPrice = roundToDecimals(upperPrice);
 
-    // Update simulation params
+    // Update simulation params with exact bin prices
     setParams(prev => ({
       ...prev,
       binStep: pool.bin_step,
-      initialPrice: roundedInitialPrice,
-      lowerPrice: roundedLowerPrice,
-      upperPrice: roundedUpperPrice,
+      initialPrice: exactBinPrice,
+      lowerPrice: lowerPrice,
+      upperPrice: upperPrice,
     }));
 
     // Update current price to match the pool
