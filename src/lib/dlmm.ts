@@ -10,11 +10,15 @@ export interface SimulationParams {
   lowerPrice: number;
   upperPrice: number;
   strategy: Strategy;
+  baseDecimals?: number;  // Number of decimals for base token (default: 9 for SOL)
+  quoteDecimals?: number; // Number of decimals for quote token (default: 6 for USDC)
+  applyDecimalAdjustment?: boolean; // Whether to apply decimal adjustments in price calculations
 }
 
 export interface SimulatedBin {
   id: number;
   price: number;
+  pricePerLamport: number; // SDK-format price (price adjusted for decimals)
   initialTokenType: 'base' | 'quote';
   initialAmount: number;
   initialValueInQuote: number;
@@ -34,152 +38,124 @@ export interface Analysis {
   quoteBins: number;
 }
 
-export const getPriceFromId = (id: number, binStep: number): number => {
-  const basis = 1 + binStep / 10000;
-  return basis ** (id - 262144);
+import { getPriceFromBinId, getBinIdFromPrice } from './dlmm-sdk-wrapper';
+import { calculateStrategyWeights, weightsToAmounts } from './dlmm-strategies';
+import Decimal from 'decimal.js';
+
+/**
+ * Converts bin ID to human-readable price using SDK-accurate formulas
+ *
+ * @param id - The bin ID
+ * @param binStep - The bin step in basis points
+ * @param baseDecimals - Base token decimals (default: 9)
+ * @param quoteDecimals - Quote token decimals (default: 6)
+ * @returns Human-readable price
+ */
+export const getPriceFromId = (
+  id: number,
+  binStep: number,
+  baseDecimals: number = 9,
+  quoteDecimals: number = 6,
+  applyDecimalAdjustment: boolean = true
+): number => {
+  return getPriceFromBinId(id, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
 };
 
-export const getIdFromPrice = (price: number, binStep: number): number => {
-    if (price <= 0 || binStep <= 0) return 0;
-    const basis = 1 + binStep / 10000;
-    return Math.floor(Math.log(price) / Math.log(basis)) + 262144;
+/**
+ * Converts human-readable price to bin ID using SDK-accurate formulas
+ *
+ * @param price - The price to convert
+ * @param binStep - The bin step in basis points
+ * @param baseDecimals - Base token decimals (default: 9)
+ * @param quoteDecimals - Quote token decimals (default: 6)
+ * @param roundUp - Whether to round up to next bin (default: false)
+ * @returns The bin ID
+ */
+export const getIdFromPrice = (
+  price: number,
+  binStep: number,
+  baseDecimals: number = 9,
+  quoteDecimals: number = 6,
+  applyDecimalAdjustment: boolean = true
+): number => {
+  return getBinIdFromPrice(price, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
 };
 
 
 export function getInitialBins(params: SimulationParams): SimulatedBin[] {
   const { binStep, initialPrice, baseAmount, quoteAmount, lowerPrice, upperPrice, strategy } = params;
+
+  // Extract decimals with defaults
+  const baseDecimals = params.baseDecimals ?? 9;
+  const quoteDecimals = params.quoteDecimals ?? 6;
+  const applyDecimalAdjustment = params.applyDecimalAdjustment ?? true;
+
   if (lowerPrice <= 0 || upperPrice <= lowerPrice || binStep <= 0 || initialPrice <= 0) {
     return [];
   }
 
-  // Use floor for lower bound and ceil for upper bound to ensure the range includes both prices
-  const minId = getIdFromPrice(lowerPrice, binStep);
-  const basis = 1 + binStep / 10000;
-  const maxIdExact = Math.log(upperPrice) / Math.log(basis) + 262144;
-  const maxId = Math.ceil(maxIdExact);
-  const initialPriceId = getIdFromPrice(initialPrice, binStep);
-  
-  const priceValid = initialPriceId >= minId && initialPriceId <= maxId;
+  // Calculate bin range using SDK-accurate formulas with decimals
+  const minId = getIdFromPrice(lowerPrice, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+  const maxId = getIdFromPrice(upperPrice, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+  const activeBinId = getIdFromPrice(initialPrice, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+
+  const priceValid = activeBinId >= minId && activeBinId <= maxId;
   if (!priceValid) {
      // Allow for out of range initial price for one-sided liquidity
   }
 
+  // Calculate strategy weights for all bins
+  const weights = calculateStrategyWeights(strategy, minId, maxId, activeBinId);
+
+  // Build price map for all bins
+  const binPrices = new Map<number, number>();
+  for (let id = minId; id <= maxId; id++) {
+    const price = getPriceFromId(id, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+    binPrices.set(id, price);
+  }
+
+  // Convert weights to token amounts
+  const amounts = weightsToAmounts(
+    weights,
+    baseAmount,
+    quoteAmount,
+    activeBinId,
+    binPrices,
+    strategy,
+    initialPrice
+  );
+
+  // Build bins array
   let bins: SimulatedBin[] = [];
-  
-  const quoteBins: {id: number, price: number}[] = [];
-  const baseBins: {id: number, price: number}[] = [];
 
   for (let id = minId; id <= maxId; id++) {
-    const price = getPriceFromId(id, binStep);
+    const price = binPrices.get(id)!;
+    const amount = amounts.get(id) || { baseAmount: 0, quoteAmount: 0, valueInQuote: 0 };
+
+    const isQuoteBin = id <= activeBinId;
+    const tokenType = isQuoteBin ? 'quote' : 'base';
+    const tokenAmount = isQuoteBin ? amount.quoteAmount : amount.baseAmount;
+
+    // Calculate price per lamport for SDK compatibility
+    const decimalAdjustment = quoteDecimals - baseDecimals;
+    const pricePerLamport = new Decimal(price).mul(Decimal.pow(10, decimalAdjustment)).toNumber();
+
     bins.push({
       id,
       price,
-      initialTokenType: 'base', // Will be determined later
-      initialAmount: 0,
-      initialValueInQuote: 0,
-      displayValue: 0,
-      currentTokenType: 'base', // Placeholder
-      currentAmount: 0,
-      currentValueInQuote: 0,
+      pricePerLamport,
+      initialTokenType: tokenType,
+      initialAmount: tokenAmount,
+      initialValueInQuote: amount.valueInQuote,
+      displayValue: amount.valueInQuote, // For chart visualization
+      currentTokenType: tokenType,
+      currentAmount: tokenAmount,
+      currentValueInQuote: amount.valueInQuote,
     });
-    if (id <= initialPriceId) {
-      quoteBins.push({id, price});
-    }
-    if (id > initialPriceId) {
-      baseBins.push({id, price});
-    }
-  }
-  
-  // Distribute Quote
-  if (quoteAmount > 0 && quoteBins.length > 0) {
-    let totalWeight = 0;
-
-    const weights = quoteBins.map(qb => {
-      const dist = initialPriceId - qb.id;
-      let weight: number;
-
-      switch(strategy) {
-        case 'curve':
-          const maxDist = initialPriceId - minId;
-          weight = maxDist > 0 ? maxDist - dist : 1;
-          break;
-        case 'bid-ask':
-          weight = dist + 1;
-          break;
-        case 'spot':
-        default:
-          weight = 1;
-          break;
-      }
-      totalWeight += weight;
-      return { id: qb.id, weight };
-    });
-    
-    if (totalWeight > 0) {
-      weights.forEach(({ id, weight }) => {
-        const binToUpdate = bins.find(b => b.id === id)!;
-        const amount = (quoteAmount * weight) / totalWeight;
-        binToUpdate.initialTokenType = 'quote';
-        binToUpdate.initialAmount = amount;
-        binToUpdate.initialValueInQuote = amount;
-      });
-    }
   }
 
-  // Distribute Base
-  if (baseAmount > 0 && baseBins.length > 0) {
-    if (strategy === 'spot') {
-      // For spot: equal value per bin at the bin price
-      const constant = quoteBins.length > 0 ? quoteAmount / quoteBins.length : 0;
-      baseBins.forEach(bb => {
-        const binToUpdate = bins.find(b => b.id === bb.id)!;
-        const amount = constant / bb.price;
-        binToUpdate.initialTokenType = 'base';
-        binToUpdate.initialAmount = amount;
-        // Each bin has equal value at its bin price
-        binToUpdate.initialValueInQuote = constant;
-      });
-    } else {
-      let totalValueWeight = 0;
-      const totalValue = baseAmount * initialPrice;
-
-      const weights = baseBins.map(bb => {
-          const dist = bb.id - initialPriceId;
-          let weight: number;
-          switch(strategy) {
-            case 'curve':
-              const maxDist = maxId - initialPriceId;
-              weight = maxDist > 0 ? maxDist - dist : 1;
-              break;
-            case 'bid-ask':
-              weight = dist + 1;
-              break;
-            default:
-              weight = 1;
-              break;
-          }
-          totalValueWeight += weight;
-          return { id: bb.id, weight, price: bb.price };
-      });
-
-      if (totalValueWeight > 0) {
-          weights.forEach(({ id, weight, price }) => {
-              const binToUpdate = bins.find(b => b.id === id)!;
-              // For base tokens, we distribute the total value (at initial price), then find amount
-              const targetValue = totalValue * (weight / totalValueWeight);
-              const amount = targetValue / price;
-
-              binToUpdate.initialTokenType = 'base';
-              binToUpdate.initialAmount = amount;
-              // Store the target value as initial value for this distribution
-              binToUpdate.initialValueInQuote = targetValue;
-          });
-      }
-    }
-  }
-  
-  
   // Normalization step to correct for floating point inaccuracies
+  // This ensures the total amounts exactly match user input
   const calculatedBaseSum = bins.reduce((sum, bin) => bin.initialTokenType === 'base' ? sum + bin.initialAmount : sum, 0);
   const calculatedQuoteSum = bins.reduce((sum, bin) => bin.initialTokenType === 'quote' ? sum + bin.initialAmount : sum, 0);
 
@@ -219,7 +195,27 @@ export function getInitialBins(params: SimulationParams): SimulatedBin[] {
 }
 
 
-export function runSimulation(initialBins: SimulatedBin[], currentPrice: number, initialPrice: number): { simulatedBins: SimulatedBin[], analysis: Analysis } {
+/**
+ * Runs a position simulation at a different price point
+ *
+ * This simulates how the position's bins convert between base and quote tokens
+ * as the market price moves. The decimal parameters are optional since bins already
+ * contain prices calculated with the correct decimal adjustments.
+ *
+ * @param initialBins - The initial bin distribution
+ * @param currentPrice - The current market price to simulate at
+ * @param initialPrice - The original position price (for reference)
+ * @param baseDecimals - Base token decimals (optional, for validation)
+ * @param quoteDecimals - Quote token decimals (optional, for validation)
+ * @returns Simulated bins and analysis
+ */
+export function runSimulation(
+  initialBins: SimulatedBin[],
+  currentPrice: number,
+  initialPrice: number,
+  baseDecimals: number = 9,
+  quoteDecimals: number = 6
+): { simulatedBins: SimulatedBin[], analysis: Analysis } {
   if (!initialBins || initialBins.length === 0) {
     return {
       simulatedBins: [],

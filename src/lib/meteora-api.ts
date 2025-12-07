@@ -32,6 +32,8 @@ export interface MeteoraPair {
   reserve_x_amount: number;
   reserve_y_amount: number;
   is_verified: boolean;
+  decimals_x?: number; // Token X decimals (for future API enhancement)
+  decimals_y?: number; // Token Y decimals (for future API enhancement)
 }
 
 export interface PairsResponse {

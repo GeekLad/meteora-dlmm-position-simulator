@@ -43,17 +43,18 @@ const FormattedNumber = ({ value, maximumFractionDigits }: { value: number; maxi
 };
 
 export function LiquidityChart({
-   bins,
-   simulatedBins,
-   currentPrice,
-   initialPrice,
-   lowerPrice,
-   upperPrice,
-   strategy,
-   onCurrentPriceChange,
-   onInitialPriceChange
-}: LiquidityChartProps) {
-  const { params } = useDlmmContext();
+     bins,
+     simulatedBins,
+     currentPrice,
+     initialPrice,
+     lowerPrice,
+     upperPrice,
+     strategy,
+     onCurrentPriceChange,
+     onInitialPriceChange
+   }: LiquidityChartProps) {
+     const { params, baseDecimals, quoteDecimals, applyDecimalAdjustment, tokenSymbols } = useDlmmContext();
+
   const chartRef = useRef<HTMLDivElement>(null);
   const [isDraggingCurrent, setIsDraggingCurrent] = useState(false);
   const [isDraggingInitial, setIsDraggingInitial] = useState(false);
@@ -120,32 +121,58 @@ export function LiquidityChart({
       return { min: lowerPrice, max: upperPrice };
     }
 
+    const baseDecimalsLocal = typeof baseDecimals === 'number' ? baseDecimals : 9;
+    const quoteDecimalsLocal = typeof quoteDecimals === 'number' ? quoteDecimals : 6;
+    const applyAdjustmentLocal = applyDecimalAdjustment ?? true;
+
     if (!bins || bins.length === 0) {
        // Estimate range if bins are not available yet
-        const basis = 1 + params.binStep / 10000;
-        const lowerId = getIdFromPrice(lowerPrice, params.binStep);
-        const upperId = getIdFromPrice(upperPrice, params.binStep);
-        const minPrice = getPriceFromId(lowerId - 1, params.binStep);
-        const maxPrice = getPriceFromId(upperId + 1, params.binStep);
+        const lowerId = getIdFromPrice(lowerPrice, params.binStep, baseDecimalsLocal, quoteDecimalsLocal, applyAdjustmentLocal);
+        const upperId = getIdFromPrice(upperPrice, params.binStep, baseDecimalsLocal, quoteDecimalsLocal, applyAdjustmentLocal);
+        const minPrice = getPriceFromId(lowerId - 1, params.binStep, baseDecimalsLocal, quoteDecimalsLocal, applyAdjustmentLocal);
+        const maxPrice = getPriceFromId(upperId + 1, params.binStep, baseDecimalsLocal, quoteDecimalsLocal, applyAdjustmentLocal);
         return { min: minPrice, max: maxPrice };
     }
-    
+
     const minId = bins[0].id;
     const maxId = bins[bins.length - 1].id;
     // Extend by one bin on each side
-    const minPrice = getPriceFromId(minId - 1, params.binStep); 
-    const maxPrice = getPriceFromId(maxId + 1, params.binStep);
+    const minPrice = getPriceFromId(minId - 1, params.binStep, baseDecimalsLocal, quoteDecimalsLocal, applyAdjustmentLocal);
+    const maxPrice = getPriceFromId(maxId + 1, params.binStep, baseDecimalsLocal, quoteDecimalsLocal, applyAdjustmentLocal);
     return { min: minPrice, max: maxPrice };
-  }, [bins, lowerPrice, upperPrice, params.binStep]);
+  }, [bins, lowerPrice, upperPrice, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment]);
 
 
   const priceToPercentage = useCallback((price: number) => {
-    if (priceRange.max <= priceRange.min) return 0;
-    const logPrice = Math.log(price);
-    const logMin = Math.log(priceRange.min);
-    const logMax = Math.log(priceRange.max);
-    return Math.max(0, Math.min(100, ((logPrice - logMin) / (logMax - logMin)) * 100));
-  }, [priceRange]);
+    if (priceRange.max <= priceRange.min || bins.length === 0) return 0;
+
+    // Use SDK-accurate bin ID calculation with decimals
+    const baseDecimalsLocal = typeof baseDecimals === 'number' ? baseDecimals : 9;
+    const quoteDecimalsLocal = typeof quoteDecimals === 'number' ? quoteDecimals : 6;
+    const applyAdjustmentLocal = applyDecimalAdjustment ?? true;
+
+    // Get the bin ID for this price
+    const binId = getIdFromPrice(price, params.binStep || 1, baseDecimalsLocal, quoteDecimalsLocal, applyAdjustmentLocal);
+
+    // Find the index of this bin in our bins array
+    const binIndex = bins.findIndex(b => b.id === binId);
+
+    if (binIndex === -1) {
+      // Bin not found in array, fall back to logarithmic positioning
+      const logPrice = Math.log(price);
+      const logMin = Math.log(priceRange.min);
+      const logMax = Math.log(priceRange.max);
+      const percentage = Math.max(0, Math.min(100, ((logPrice - logMin) / (logMax - logMin)) * 100));
+      return percentage;
+    }
+
+    // Calculate percentage based on bin index
+    // Each bin occupies equal width, position at the center of the bin
+    const binWidth = 100 / bins.length;
+    const centerOffset = binWidth / 2;
+    const percentage = (binIndex * binWidth) + centerOffset;
+    return percentage;
+  }, [priceRange, bins, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment]);
 
   const percentageToPrice = useCallback((percentage: number) => {
     if (priceRange.min <= 0 || priceRange.max <= 0) return 0;
@@ -158,22 +185,26 @@ export function LiquidityChart({
 
   const findClosestBinPrice = useCallback((price: number) => {
     if (typeof params.binStep !== 'number' || params.binStep <= 0 || !isFinite(price)) return price;
-    
-    const basis = 1 + params.binStep / 10000;
-    const idUnrounded = Math.log(price) / Math.log(basis) + 262144 - 0.5;
-    let targetId = Math.round(idUnrounded) + 1;
 
+    // Use SDK-accurate bin ID calculation with decimals
+    const baseDecimalsLocal = typeof baseDecimals === 'number' ? baseDecimals : 9;
+    const quoteDecimalsLocal = typeof quoteDecimals === 'number' ? quoteDecimals : 6;
+    const applyAdjustmentLocal = applyDecimalAdjustment ?? true;
+
+    // Get the bin ID for this price (no rounding)
+    let targetId = getIdFromPrice(price, params.binStep, baseDecimalsLocal, quoteDecimalsLocal, applyAdjustmentLocal);
 
     if (bins.length > 0) {
         const minId = bins[0].id;
         const maxId = bins[bins.length - 1].id;
         // Allow one bin outside the range
-        if (targetId < minId -1) targetId = minId - 1;
+        if (targetId < minId - 1) targetId = minId - 1;
         if (targetId > maxId + 1) targetId = maxId + 1;
     }
 
-    return getPriceFromId(targetId, params.binStep);
-  }, [bins, params.binStep]);
+    // Get the exact SDK price for this bin ID
+    return getPriceFromId(targetId, params.binStep, baseDecimalsLocal, quoteDecimalsLocal, applyAdjustmentLocal);
+  }, [bins, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment]);
 
 
   // Use PointerEvent so touch + mouse both work
@@ -185,7 +216,8 @@ export function LiquidityChart({
     percentage = Math.max(0, Math.min(100, percentage));
 
     const newPrice = percentageToPrice(percentage);
-    const snappedPrice = newPrice;
+    // Snap to the closest valid bin price using SDK calculations
+    const snappedPrice = findClosestBinPrice(newPrice);
 
     if (isDraggingCurrent) {
       onCurrentPriceChange(snappedPrice);
@@ -232,7 +264,7 @@ export function LiquidityChart({
     Array.from({ length: numTicks }, (_, i) => {
       const price = percentageToPrice((i / (numTicks - 1)) * 100);
       return { price, position: priceToPercentage(price) };
-    }), [percentageToPrice, priceToPercentage]
+    }), [percentageToPrice, priceToPercentage, numTicks]
   );
 
   const binsToDisplay = simulatedBins.length > 0 ? simulatedBins : bins;
@@ -346,7 +378,7 @@ export function LiquidityChart({
 
           {/* Current Price Indicator */}
           <div
-            className="absolute top-0 bottom-0 w-6 -translate-x-1/2 cursor-ew-resize transition-all duration-300 ease-out"
+            className="absolute top-0 bottom-0 w-6 -translate-x-1/2 cursor-ew-resize"
             style={{ left: `${currentPricePosition}%`, touchAction: 'none' as const }}
             onPointerDown={(e) => { e.preventDefault(); setIsDraggingCurrent(true); }}
           >
@@ -380,7 +412,7 @@ export function LiquidityChart({
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-slate-300">Token:</span>
-                  <span className="font-semibold capitalize text-white">{hoveredBin.currentTokenType}</span>
+                  <span className="font-semibold capitalize text-white">{tokenSymbols[hoveredBin.currentTokenType as keyof typeof tokenSymbols]}</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-slate-300">Amount:</span>
@@ -414,7 +446,7 @@ export function LiquidityChart({
         <div className="relative h-8 mt-4 mb-2 w-full">
           <div className="absolute h-2 top-1/2 -translate-y-1/2 w-full bg-gradient-to-r from-secondary/50 via-secondary to-secondary/50 rounded-full shadow-inner" />
           <div
-            className="absolute top-1/2 w-5 h-5 bg-gradient-to-br from-primary to-purple-500 rounded-full cursor-pointer border-2 border-background shadow-lg transition-all duration-300 hover:scale-110 hover:shadow-xl"
+            className="absolute top-1/2 w-5 h-5 bg-gradient-to-br from-primary to-purple-500 rounded-full cursor-pointer border-2 border-background shadow-lg hover:scale-110 hover:shadow-xl"
             style={{
               left: `${initialPricePosition}%`,
               transform: 'translate(-50%, -50%)',
@@ -425,7 +457,7 @@ export function LiquidityChart({
             }}
             onPointerDown={(e) => { e.preventDefault(); setIsDraggingInitial(true); }}
           />
-          <div className="absolute top-full text-center mt-1 transition-all duration-300" style={{left: `${initialPricePosition}%`, transform: 'translateX(-50%)'}}>
+          <div className="absolute top-full text-center mt-1" style={{left: `${initialPricePosition}%`, transform: 'translateX(-50%)'}}>
             <span className="text-xs text-muted-foreground font-medium">
               Initial Price: <span className="text-primary font-bold"><FormattedNumber value={initialPrice} maximumFractionDigits={4} /></span>
             </span>

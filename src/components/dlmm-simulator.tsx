@@ -4,6 +4,7 @@
 import { useState, useMemo, useEffect, createContext, useContext, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { getInitialBins, runSimulation, getIdFromPrice, getPriceFromId, type SimulationParams, type Analysis, type SimulatedBin, type Strategy } from "@/lib/dlmm";
@@ -17,6 +18,7 @@ import { Switch } from "./ui/switch";
 import { PoolSelector } from "@/components/pool-selector";
 import { ShareButton } from '@/components/share-button';
 import { MeteoraPair, parseTokenSymbols } from "@/lib/meteora-api";
+import { reverseEngineerDecimals } from "@/lib/dlmm-sdk-wrapper";
 
 type PartialSimulationParams = Omit<SimulationParams, 'strategy' | 'binStep' | 'initialPrice' | 'baseAmount' | 'quoteAmount' | 'lowerPrice' | 'upperPrice'> & {
   strategy: Strategy;
@@ -39,8 +41,12 @@ const defaultParams: PartialSimulationParams = {
 };
 
 type DlmmContextType = {
-  params: PartialSimulationParams;
-};
+   params: PartialSimulationParams;
+   baseDecimals: number;
+   quoteDecimals: number;
+   applyDecimalAdjustment: boolean;
+   tokenSymbols: { base: string; quote: string };
+ };
 
 const DlmmContext = createContext<DlmmContextType | null>(null);
 
@@ -88,11 +94,16 @@ export function DlmmSimulator() {
   const [simulation, setSimulation] = useState<{ simulatedBins: SimulatedBin[], analysis: Analysis } | null>(null);
   const [selectedPool, setSelectedPool] = useState<MeteoraPair | null>(null);
   const [tokenSymbols, setTokenSymbols] = useState<{ base: string; quote: string }>({ base: 'Base', quote: 'Quote' });
+  const [baseDecimals, setBaseDecimals] = useState<number>(9); // Default to SOL decimals
+  const [quoteDecimals, setQuoteDecimals] = useState<number>(6); // Default to USDC decimals
+  const [applyDecimalAdjustment, setApplyDecimalAdjustment] = useState<boolean>(true);
+  const [decimalsDetermined, setDecimalsDetermined] = useState<boolean>(true);
   const [autoFill, setAutoFill] = useState(false);
   const [lastAutoFilledToken, setLastAutoFilledToken] = useState<'base' | 'quote' | null>(null);
   const [lowerPricePercentage, setLowerPricePercentage] = useState<number | ''>('');
   const [upperPricePercentage, setUpperPricePercentage] = useState<number | ''>('');
   const [initialPoolAddress, setInitialPoolAddress] = useState<string | null>(null);
+  const [clearKey, setClearKey] = useState(0);
   const searchParams = useSearchParams();
   const hasLoadedRef = useRef(false);
 
@@ -107,8 +118,13 @@ export function DlmmSimulator() {
 
     if (!allParamsSet) return null;
 
-    return params as SimulationParams;
-  }, [params]);
+    return {
+      ...params as SimulationParams,
+      baseDecimals,
+      quoteDecimals,
+      applyDecimalAdjustment,
+    };
+  }, [params, baseDecimals, quoteDecimals]);
 
 
   useEffect(() => {
@@ -619,8 +635,15 @@ export function DlmmSimulator() {
     setSimulation(null);
     setSelectedPool(null);
     setTokenSymbols({ base: 'Base', quote: 'Quote' });
+    setBaseDecimals(9); // Reset to SOL default
+    setQuoteDecimals(6); // Reset to USDC default
+    setApplyDecimalAdjustment(true);
+    setDecimalsDetermined(false);
+    setAutoFill(false);
+    setLastAutoFilledToken(null);
     setLowerPricePercentage('');
     setUpperPricePercentage('');
+    setClearKey(prev => prev + 1);
   };
   
   const handleInitialPriceChange = (newInitialPrice: number) => {
@@ -633,32 +656,87 @@ export function DlmmSimulator() {
   }
 
   const handlePoolSelect = (pool: MeteoraPair) => {
+    console.log(`[DEBUG] Pool selected: ${pool.name}, address: ${pool.address}`);
+    console.log(`[DEBUG] Pool data: current_price=${pool.current_price}, bin_step=${pool.bin_step}, decimals_x=${pool.decimals_x}, decimals_y=${pool.decimals_y}`);
+
     setSelectedPool(pool);
 
     // Update token symbols
     const symbols = parseTokenSymbols(pool.name);
     setTokenSymbols(symbols);
 
+    // Determine decimals: use API values if available, otherwise reverse engineer
+    let poolBaseDecimals: number;
+    let poolQuoteDecimals: number;
+    let applyDecimalAdjustment: boolean = true;
+
+    if (pool.decimals_x !== undefined && pool.decimals_x !== null &&
+        pool.decimals_y !== undefined && pool.decimals_y !== null) {
+      // Use API-provided decimals, but still determine if decimal adjustments should be applied
+      poolBaseDecimals = pool.decimals_x;
+      poolQuoteDecimals = pool.decimals_y;
+      console.log(`[DEBUG] Using API decimals: base=${poolBaseDecimals}, quote=${poolQuoteDecimals}`);
+
+      // Still reverse engineer to determine if decimal adjustments are needed
+      const reverseEngineered = reverseEngineerDecimals(pool.current_price, pool.bin_step, pool.mint_x, pool.mint_y);
+      applyDecimalAdjustment = reverseEngineered.applyDecimalAdjustment;
+      console.log(`[DEBUG] Determined applyAdjustment=${applyDecimalAdjustment} for API decimals`);
+    } else {
+      // Reverse engineer decimals from API price
+      const reverseEngineered = reverseEngineerDecimals(pool.current_price, pool.bin_step, pool.mint_x, pool.mint_y);
+      poolBaseDecimals = reverseEngineered.baseDecimals;
+      poolQuoteDecimals = reverseEngineered.quoteDecimals;
+      applyDecimalAdjustment = reverseEngineered.applyDecimalAdjustment;
+      console.log(`[DEBUG] Reverse engineered decimals: base=${poolBaseDecimals}, quote=${poolQuoteDecimals}, applyAdjustment=${applyDecimalAdjustment}`);
+    }
+
+    // Update the component state with the determined decimals
+    setBaseDecimals(poolBaseDecimals);
+    setQuoteDecimals(poolQuoteDecimals);
+    setApplyDecimalAdjustment(applyDecimalAdjustment);
+    setDecimalsDetermined(true);
+
+    setBaseDecimals(poolBaseDecimals);
+    setQuoteDecimals(poolQuoteDecimals);
+    setApplyDecimalAdjustment(applyDecimalAdjustment);
+
     // Calculate price range: 69 bins centered around initial price
-    const currentBinId = getIdFromPrice(pool.current_price, pool.bin_step);
+    const currentBinId = getIdFromPrice(pool.current_price, pool.bin_step, poolBaseDecimals, poolQuoteDecimals, applyDecimalAdjustment);
     const lowerBinId = currentBinId - 34;
     const upperBinId = currentBinId + 34;
 
+    console.log(`[DEBUG] Bin calculations: currentBinId=${currentBinId}, lowerBinId=${lowerBinId}, upperBinId=${upperBinId}`);
+
     // Get the exact bin prices - these will be the boundaries
-    const lowerPrice = getPriceFromId(lowerBinId, pool.bin_step);
-    const upperPrice = getPriceFromId(upperBinId, pool.bin_step);
+    const lowerPrice = getPriceFromId(lowerBinId, pool.bin_step, poolBaseDecimals, poolQuoteDecimals, applyDecimalAdjustment);
+    const upperPrice = getPriceFromId(upperBinId, pool.bin_step, poolBaseDecimals, poolQuoteDecimals, applyDecimalAdjustment);
+
+    // Check if the API current_price matches any bin price
+    const exactBinPrice = getPriceFromId(currentBinId, pool.bin_step, poolBaseDecimals, poolQuoteDecimals, applyDecimalAdjustment);
+    const priceDifference = Math.abs(pool.current_price - exactBinPrice);
+
+    console.log(`[DEBUG] Price validation: API current_price=${pool.current_price}, exact bin price=${exactBinPrice}, difference=${priceDifference}`);
+
+    // Check a few neighboring bins to see their prices
+    for (let offset = -2; offset <= 2; offset++) {
+      const binId = currentBinId + offset;
+      const binPrice = getPriceFromId(binId, pool.bin_step, poolBaseDecimals, poolQuoteDecimals, applyDecimalAdjustment);
+      console.log(`[DEBUG] Bin ${binId}: price=${binPrice}`);
+    }
+
+    console.log(`[DEBUG] Price range: lowerPrice=${lowerPrice}, upperPrice=${upperPrice}`);
 
     // Update simulation params
     setParams(prev => ({
       ...prev,
       binStep: pool.bin_step,
-      initialPrice: pool.current_price,
+      initialPrice: exactBinPrice, // Use the exact bin price instead of API price
       lowerPrice: lowerPrice,
       upperPrice: upperPrice,
     }));
 
     // Update current price to match the pool
-    setCurrentPrice(pool.current_price);
+    setCurrentPrice(exactBinPrice);
   };
 
   const analysis = simulation?.analysis;
@@ -788,7 +866,7 @@ export function DlmmSimulator() {
 
 
   return (
-    <DlmmContext.Provider value={{params}}>
+    <DlmmContext.Provider value={{params, baseDecimals, quoteDecimals, applyDecimalAdjustment, tokenSymbols}}>
     <div className="flex flex-col gap-8">
       <header className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-6 rounded-2xl bg-gradient-to-r from-primary/10 via-purple-500/10 to-primary/10 border border-primary/20 backdrop-blur-sm">
         <div className="flex items-center gap-3">
@@ -816,7 +894,7 @@ export function DlmmSimulator() {
               <CardDescription>Search and select a Meteora DLMM pool to simulate, or manually enter the position information below.</CardDescription>
             </CardHeader>
             <CardContent>
-              <PoolSelector onSelectPool={handlePoolSelect} selectedPool={selectedPool} initialPoolAddress={initialPoolAddress} />
+              <PoolSelector key={clearKey} onSelectPool={handlePoolSelect} selectedPool={selectedPool} initialPoolAddress={initialPoolAddress} />
             </CardContent>
           </Card>
 
@@ -963,7 +1041,7 @@ export function DlmmSimulator() {
             </CardHeader>
             <CardContent className="flex-grow flex flex-col justify-center gap-4 pt-8">
               <div className="h-80 w-full">
-                {simulationParams && typeof currentPrice === 'number' && typeof params.initialPrice === 'number' && typeof params.lowerPrice === 'number' && typeof params.upperPrice === 'number' ? (
+                {simulationParams && decimalsDetermined && typeof currentPrice === 'number' && typeof params.initialPrice === 'number' && typeof params.lowerPrice === 'number' && typeof params.upperPrice === 'number' ? (
                   <LiquidityChart
                     bins={initialBins}
                     simulatedBins={simulation?.simulatedBins ?? []}
