@@ -17,6 +17,7 @@ import { Button } from "./ui/button";
 import { Switch } from "./ui/switch";
 import { PoolSelector } from "@/components/pool-selector";
 import { ShareButton } from '@/components/share-button';
+import { ThemeToggle } from "@/components/theme-toggle";
 import { MeteoraPair, parseTokenSymbols } from "@/lib/meteora-api";
 import { reverseEngineerDecimals } from "@/lib/dlmm-sdk-wrapper";
 
@@ -1072,6 +1073,7 @@ export function DlmmSimulator() {
           <Button variant="outline" size="sm" onClick={handleClear} className="hover:bg-primary/10 transition-all duration-300">
             <RefreshCcw className="mr-2 h-4 w-4" />Clear All
           </Button>
+          <ThemeToggle />
         </div>
       </header>
 
