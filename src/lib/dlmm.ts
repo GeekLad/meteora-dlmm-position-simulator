@@ -22,7 +22,7 @@ export interface SimulatedBin {
   initialTokenType: 'base' | 'quote';
   initialAmount: number;
   initialValueInQuote: number;
-  displayValue: number;
+  // displayValue removed - chart derives display values at render time from calculation data
   currentTokenType: 'base' | 'quote';
   currentAmount: number;
   currentValueInQuote: number;
@@ -147,7 +147,6 @@ export function getInitialBins(params: SimulationParams): SimulatedBin[] {
       initialTokenType: tokenType,
       initialAmount: tokenAmount,
       initialValueInQuote: amount.valueInQuote,
-      displayValue: amount.valueInQuote, // For chart visualization
       currentTokenType: tokenType,
       currentAmount: tokenAmount,
       currentValueInQuote: amount.valueInQuote,
@@ -164,14 +163,8 @@ export function getInitialBins(params: SimulationParams): SimulatedBin[] {
     bins.forEach(bin => {
       if (bin.initialTokenType === 'base') {
         bin.initialAmount *= baseCorrectionFactor;
-        // Preserve the distribution's value structure
-        if (strategy === 'spot') {
-          // For spot: maintain equal value per bin at bin price
-          bin.initialValueInQuote = bin.initialAmount * bin.price;
-        } else {
-          // For bid-ask/curve: maintain market-price-based valuation
-          bin.initialValueInQuote *= baseCorrectionFactor;
-        }
+        // Always calculate market value at initial price for P&L
+        bin.initialValueInQuote = bin.initialAmount * initialPrice;
       }
     });
   }
@@ -185,11 +178,6 @@ export function getInitialBins(params: SimulationParams): SimulatedBin[] {
       }
     });
   }
-
-  // Set displayValue for chart visualization. This MUST reflect the initial quote value.
-  bins.forEach(bin => {
-    bin.displayValue = bin.initialValueInQuote;
-  });
 
   return bins.sort((a, b) => a.price - b.price);
 }
@@ -230,7 +218,6 @@ export function runSimulation(
       simBin.currentAmount = 0;
       simBin.currentValueInQuote = 0;
       simBin.currentTokenType = simBin.initialTokenType;
-      simBin.displayValue = 0;
       return simBin;
     }
 
@@ -260,8 +247,7 @@ export function runSimulation(
         simBin.currentValueInQuote = simBin.currentAmount;
     }
 
-    // The displayValue from getInitialBins is static and represents the initial distribution shape.
-    // We don't change it during simulation.
+    // Display values are derived at render time, not stored in bins
 
     return simBin;
   });

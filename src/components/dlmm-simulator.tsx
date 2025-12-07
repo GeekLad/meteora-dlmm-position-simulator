@@ -12,6 +12,7 @@ import { LiquidityChart } from "@/components/liquidity-chart";
 import { Logo } from "@/components/icons";
 import { Layers, CandlestickChart, Coins, ChevronsLeftRight, Footprints, RefreshCcw, MoveHorizontal, ExternalLink } from "lucide-react";
 import { formatNumber } from "@/lib/utils";
+import { formatNumberForDisplay } from "@/lib/display-formatting";
 import { RadioGroup, RadioGroupItem } from "./ui/radio-group";
 import { Button } from "./ui/button";
 import { Switch } from "./ui/switch";
@@ -60,31 +61,19 @@ export const useDlmmContext = () => {
 };
 
 
-const FormattedNumber = ({ value, maximumFractionDigits }: { value: number; maximumFractionDigits?: number }) => {
-  const isNegative = value < 0;
-  const absValue = Math.abs(value);
+const FormattedNumber = ({ value, maximumFractionDigits = 4 }: { value: number; maximumFractionDigits?: number }) => {
+  const formatted = formatNumberForDisplay(value, { maximumFractionDigits });
 
-  if (absValue > 0 && absValue < 0.000000001) {
-    return <>0</>;
-  }
-
-  if (absValue > 0 && absValue < 0.001) {
-    const s = absValue.toFixed(20);
-    const firstDigitIndex = s.search(/[1-9]/);
-    const numZeros = firstDigitIndex - 2;
-    if (numZeros > 9) {
-      return <>0</>;
-    }
-    if (numZeros >= 3) {
-      const remainingDigits = s.substring(firstDigitIndex, firstDigitIndex + 7);
-      return (
-        <>
-          {isNegative && '-'}0.0<sub>{numZeros}</sub>{remainingDigits}
-        </>
-      );
+  // Handle subscript notation in JSX
+  if (formatted.includes('₍')) {
+    const match = formatted.match(/(.*)₍(\d+)₎(.*)/);
+    if (match) {
+      const [, prefix, subNum, suffix] = match;
+      return <>{prefix}<sub>{subNum}</sub>{suffix}</>;
     }
   }
-  return <>{formatNumber(value, maximumFractionDigits)}</>;
+
+  return <>{formatted}</>;
 };
 
 
@@ -590,11 +579,9 @@ export function DlmmSimulator() {
         // Find the bin just below upperPrice
         const upperBinId = getIdFromPrice(params.upperPrice, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
         const safeLowerBinId = upperBinId - 1;
-        finalValue = roundPriceToDecimals(
-          getPriceFromId(safeLowerBinId, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment)
-        );
+        finalValue = getPriceFromId(safeLowerBinId, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
       } else {
-        finalValue = roundPriceToDecimals(roundedPrice);
+        finalValue = roundedPrice;
       }
     } else {
       // field === 'upperPrice'
@@ -603,11 +590,9 @@ export function DlmmSimulator() {
         // Find the bin just above lowerPrice
         const lowerBinId = getIdFromPrice(params.lowerPrice, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
         const safeUpperBinId = lowerBinId + 1;
-        finalValue = roundPriceToDecimals(
-          getPriceFromId(safeUpperBinId, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment)
-        );
+        finalValue = getPriceFromId(safeUpperBinId, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
       } else {
-        finalValue = roundPriceToDecimals(roundedPrice);
+        finalValue = roundedPrice;
       }
     }
 
@@ -770,11 +755,9 @@ export function DlmmSimulator() {
           // Find the bin just below upperPrice
           const upperBinId = getIdFromPrice(params.upperPrice, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
           const safeLowerBinId = upperBinId - 1;
-          finalValue = roundPriceToDecimals(
-            getPriceFromId(safeLowerBinId, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment)
-          );
+          finalValue = getPriceFromId(safeLowerBinId, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
         } else {
-          finalValue = roundPriceToDecimals(roundedPrice);
+          finalValue = roundedPrice;
         }
       } else {
         // field === 'upperPrice'
@@ -783,11 +766,9 @@ export function DlmmSimulator() {
           // Find the bin just above lowerPrice
           const lowerBinId = getIdFromPrice(params.lowerPrice, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
           const safeUpperBinId = lowerBinId + 1;
-          finalValue = roundPriceToDecimals(
-            getPriceFromId(safeUpperBinId, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment)
-          );
+          finalValue = getPriceFromId(safeUpperBinId, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
         } else {
-          finalValue = roundPriceToDecimals(roundedPrice);
+          finalValue = roundedPrice;
         }
       }
 
@@ -796,9 +777,8 @@ export function DlmmSimulator() {
       // Round initial price to nearest bin
       const binId = getIdFromPrice(currentValue, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
       const roundedPrice = getPriceFromId(binId, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
-      const finalValue = roundPriceToDecimals(roundedPrice);
-      setParams(prev => ({ ...prev, initialPrice: finalValue }));
-      setCurrentPrice(finalValue);
+      setParams(prev => ({ ...prev, initialPrice: roundedPrice }));
+      setCurrentPrice(roundedPrice);
     }
   };
 
@@ -932,22 +912,11 @@ export function DlmmSimulator() {
   const analysis = simulation?.analysis;
 
   const initialTotalValue = useMemo(() => {
-    if (!initialBins || initialBins.length === 0 || typeof params.initialPrice !== 'number') return 0;
-
-    const initialPrice = params.initialPrice;
-    // Calculate market value at initial price
-    return initialBins.reduce((sum, bin) => {
-      if (bin.initialAmount <= 0) return sum;
-
-      if (bin.initialTokenType === 'base') {
-        // Base tokens valued at initial market price
-        return sum + (bin.initialAmount * initialPrice);
-      } else {
-        // Quote tokens valued at face value
-        return sum + bin.initialAmount;
-      }
-    }, 0);
-  }, [initialBins, params.initialPrice]);
+    if (!initialBins || initialBins.length === 0) return 0;
+    // Use pre-calculated and normalized initialValueInQuote from bins
+    // This avoids recalculation errors and respects the normalization step
+    return initialBins.reduce((sum, bin) => sum + bin.initialValueInQuote, 0);
+  }, [initialBins]);
   
   
   // Position Value Change

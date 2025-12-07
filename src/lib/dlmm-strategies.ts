@@ -138,7 +138,7 @@ export function weightsToAmounts(
   // Distribute base tokens
   if (totalBaseWeight > 0 && totalBaseAmount > 0) {
     if (strategy === 'spot') {
-      // Spot strategy: equal VALUE per bin at bin price
+      // Spot strategy: equal amount per bin (equal USDC value when converted at bin price)
       // Calculate the constant value that each bin should have
       const constantValue = quoteBins.length > 0 ? totalQuoteAmount / quoteBins.length : 0;
 
@@ -148,7 +148,7 @@ export function weightsToAmounts(
         amounts.set(id, {
           baseAmount: amount,
           quoteAmount: 0,
-          valueInQuote: constantValue
+          valueInQuote: amount * initialPrice  // Value at market price for P&L
         });
       });
     } else {

@@ -86,15 +86,20 @@ export function LiquidityChart({
   // Helper function to get the value for bin height based on toggle
   const getBinValue = useCallback((bin: SimulatedBin) => {
     if (useCurrentPrice) {
-      // Use current price to calculate value for base tokens
+      // Current value at market price
       if (bin.currentTokenType === 'base') {
         return bin.currentAmount * currentPrice;
       } else {
         return bin.currentAmount;
       }
     } else {
-      // Use bin price to show static distribution shape
-      return bin.displayValue;
+      // Initial distribution - derive from pristine calculation data
+      // This matches Meteora UI behavior: show value at each bin's price
+      if (bin.initialTokenType === 'base') {
+        return bin.initialAmount * bin.price;
+      } else {
+        return bin.initialAmount;
+      }
     }
   }, [useCurrentPrice, currentPrice]);
   
@@ -114,8 +119,11 @@ export function LiquidityChart({
     else if (prevBins.length > 0 && binsToDisplay.length > 0) {
       const hasChanged = binsToDisplay.some((bin, i) => {
         const prevBin = prevBins[i];
-        return !prevBin ||
-               Math.abs(bin.displayValue - prevBin.displayValue) > 0.0001 ||
+        if (!prevBin) return true;
+        // Compare actual values instead of displayValue
+        const currentVal = getBinValue(bin);
+        const prevVal = getBinValue(prevBin);
+        return Math.abs(currentVal - prevVal) > 0.0001 ||
                bin.currentTokenType !== prevBin.currentTokenType;
       });
 
@@ -125,7 +133,7 @@ export function LiquidityChart({
     }
 
     prevBinsRef.current = binsToDisplay;
-  }, [bins, simulatedBins]);
+  }, [bins, simulatedBins, getBinValue]);
 
   const maxValue = useMemo(() => {
     const binsToDisplay = simulatedBins.length > 0 ? simulatedBins : bins;
@@ -360,7 +368,7 @@ export function LiquidityChart({
           <div className={`flex items-end h-full w-full ${gapClass}`}>
             {animatedBins.map((bin) => {
               const baseColor = bin.currentTokenType === 'base' ? 'var(--color-base)' : 'var(--color-quote)';
-              const hasValue = bin.displayValue > 0;
+              const hasValue = getBinValue(bin) > 0;
 
               return (
                 <div
