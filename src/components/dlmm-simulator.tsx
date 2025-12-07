@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useState, useMemo, useEffect, createContext, useContext, useRef } from "react";
+import { useState, useMemo, useEffect, createContext, useContext, useRef, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -124,6 +124,15 @@ export function DlmmSimulator() {
     };
   }, [params, baseDecimals, quoteDecimals, applyDecimalAdjustment]);
 
+  const formatTokenAmountForDisplay = useCallback((amount: number | '', decimals: number): string => {
+    if (amount === '') return '';
+    // Round to token decimals and remove trailing zeros
+    const rounded = Math.floor(amount * Math.pow(10, decimals)) / Math.pow(10, decimals);
+    // Convert to string with full precision, then remove trailing zeros
+    const fixedString = rounded.toFixed(decimals);
+    // Remove trailing zeros and unnecessary decimal point
+    return fixedString.replace(/\.?0+$/, '');
+  }, []);
 
   useEffect(() => {
     if (simulationParams) {
@@ -199,15 +208,15 @@ export function DlmmSimulator() {
   // Sync amount input fields when params change (but not when user is editing)
   useEffect(() => {
     if (!isEditingAmountRef.current.base) {
-      setBaseAmountInput(params.baseAmount === '' ? '' : String(params.baseAmount));
+      setBaseAmountInput(formatTokenAmountForDisplay(params.baseAmount, baseDecimals));
     }
-  }, [params.baseAmount]);
+  }, [params.baseAmount, baseDecimals, formatTokenAmountForDisplay]);
 
   useEffect(() => {
     if (!isEditingAmountRef.current.quote) {
-      setQuoteAmountInput(params.quoteAmount === '' ? '' : String(params.quoteAmount));
+      setQuoteAmountInput(formatTokenAmountForDisplay(params.quoteAmount, quoteDecimals));
     }
-  }, [params.quoteAmount]);
+  }, [params.quoteAmount, quoteDecimals, formatTokenAmountForDisplay]);
 
   // Auto-fill when toggle is turned on
   useEffect(() => {
@@ -528,13 +537,6 @@ export function DlmmSimulator() {
     return Math.floor(price * multiplier) / multiplier;
   };
 
-  const formatTokenAmountForDisplay = (amount: number | '', decimals: number): string => {
-    if (amount === '') return '';
-    // Show up to the token's decimal places, but at least 2 decimals
-    const displayDecimals = Math.max(decimals, 2);
-    return amount.toFixed(displayDecimals);
-  };
-
   const handlePricePercentageChange = (priceType: 'lower' | 'upper', value: string) => {
     const numValue = parseFloat(value);
     const finalValue = value === '' ? '' : numValue;
@@ -809,7 +811,25 @@ export function DlmmSimulator() {
   }
 
   const handleAmountBlur = (field: 'baseAmount' | 'quoteAmount') => {
-    // Clear the editing flag
+    // Round the amount to the token's decimals
+    const currentValue = params[field];
+    if (typeof currentValue === 'number') {
+      const decimals = field === 'baseAmount' ? baseDecimals : quoteDecimals;
+      const rounded = Math.floor(currentValue * Math.pow(10, decimals)) / Math.pow(10, decimals);
+
+      // Update params with rounded value
+      setParams(prev => ({ ...prev, [field]: rounded }));
+
+      // Format and update input display directly
+      const formatted = formatTokenAmountForDisplay(rounded, decimals);
+      if (field === 'baseAmount') {
+        setBaseAmountInput(formatted);
+      } else {
+        setQuoteAmountInput(formatted);
+      }
+    }
+
+    // Clear the editing flag after updating
     if (field === 'baseAmount') {
       isEditingAmountRef.current.base = false;
     } else {
