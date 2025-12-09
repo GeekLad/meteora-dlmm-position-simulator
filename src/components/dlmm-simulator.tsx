@@ -426,29 +426,55 @@ export function DlmmSimulator() {
 
     if (lastAutoFilledToken === 'quote') {
       // Recalculate quote based on base
-      if (typeof params.baseAmount === 'number') {
+      const hasBase = typeof params.baseAmount === 'number' && params.baseAmount !== 0;
+      const hasQuote = typeof params.quoteAmount === 'number' && params.quoteAmount !== 0;
+
+      if (hasBase) {
         if (quoteBinsCount > 0 && baseBinsCount > 0) {
           const { quoteSumWeight, baseSumWeightOverPrice } = calculateWeightedSums();
-          newParams.quoteAmount = params.baseAmount * (quoteSumWeight / baseSumWeightOverPrice);
+          newParams.quoteAmount = (params.baseAmount as number) * (quoteSumWeight / baseSumWeightOverPrice);
         } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
           newParams.quoteAmount = 0;
         } else if (quoteBinsCount > 0 && baseBinsCount === 0) {
           newParams.baseAmount = 0;
         }
         setParams(newParams);
+      } else if (hasQuote && !hasBase) {
+        // Base is 0 but quote has value - recalculate base from quote
+        if (quoteBinsCount > 0 && baseBinsCount > 0) {
+          const { quoteSumWeight, baseSumWeightOverPrice } = calculateWeightedSums();
+          newParams.baseAmount = (params.quoteAmount as number) * (baseSumWeightOverPrice / quoteSumWeight);
+          setParams(newParams);
+        } else if (quoteBinsCount > 0 && baseBinsCount === 0) {
+          // Still in quote-only range, keep as is
+          setParams(newParams);
+        }
       }
     } else if (lastAutoFilledToken === 'base') {
       // Recalculate base based on quote
-      if (typeof params.quoteAmount === 'number') {
+      const hasBase = typeof params.baseAmount === 'number' && params.baseAmount !== 0;
+      const hasQuote = typeof params.quoteAmount === 'number' && params.quoteAmount !== 0;
+
+      if (hasQuote) {
         if (quoteBinsCount > 0 && baseBinsCount > 0) {
           const { quoteSumWeight, baseSumWeightOverPrice } = calculateWeightedSums();
-          newParams.baseAmount = params.quoteAmount * (baseSumWeightOverPrice / quoteSumWeight);
+          newParams.baseAmount = (params.quoteAmount as number) * (baseSumWeightOverPrice / quoteSumWeight);
         } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
           newParams.quoteAmount = 0;
         } else if (quoteBinsCount > 0 && baseBinsCount === 0) {
           newParams.baseAmount = 0;
         }
         setParams(newParams);
+      } else if (hasBase && !hasQuote) {
+        // Quote is 0 but base has value - recalculate quote from base
+        if (quoteBinsCount > 0 && baseBinsCount > 0) {
+          const { quoteSumWeight, baseSumWeightOverPrice } = calculateWeightedSums();
+          newParams.quoteAmount = (params.baseAmount as number) * (quoteSumWeight / baseSumWeightOverPrice);
+          setParams(newParams);
+        } else if (baseBinsCount > 0 && quoteBinsCount === 0) {
+          // Still in base-only range, keep as is
+          setParams(newParams);
+        }
       }
     }
   }, [params.initialPrice, autoFill, lastAutoFilledToken, params.strategy]);
