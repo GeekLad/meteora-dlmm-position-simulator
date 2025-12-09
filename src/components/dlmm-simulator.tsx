@@ -1265,7 +1265,7 @@ export function DlmmSimulator() {
                 )}
               </CardTitle>
             </CardHeader>
-            <CardContent className="flex-grow flex flex-col justify-center gap-4 pt-8">
+            <CardContent className="flex-grow flex flex-col gap-4 pt-2">
               <div className="h-80 w-full">
                 {simulationParams && decimalsDetermined && typeof currentPrice === 'number' && typeof params.initialPrice === 'number' && typeof params.lowerPrice === 'number' && typeof params.upperPrice === 'number' ? (
                   <LiquidityChart

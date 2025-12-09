@@ -331,37 +331,26 @@ export function LiquidityChart({
 
   return (
         <div className="flex flex-col h-full w-full justify-between relative">
-          {/* Use Current Price Toggle and Reset Button - positioned above the chart */}
-          <div className="flex items-center gap-4 mb-16 px-3 py-1.5 bg-card/80 backdrop-blur-sm rounded-md border border-border/50 shadow-sm self-start">
-            <div className="flex items-center gap-2">
-              <Switch checked={useCurrentPrice} onCheckedChange={setUseCurrentPrice} />
-              <label className="text-xs text-muted-foreground font-medium whitespace-nowrap">Use Current Price</label>
-              <TooltipProvider delayDuration={0}>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <div className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-muted-foreground/30 cursor-help hover:border-muted-foreground/60 transition-colors">
-                      <span className="text-[10px] italic text-muted-foreground font-serif">i</span>
-                    </div>
-                  </TooltipTrigger>
-                  <TooltipContent className="max-w-xs">
-                    <p className="text-xs">
-                      By default, the liquidity distribution is displayed in the same manner as the Meteora UI,
-                      showing bin heights based on each bin's price. Enabling this toggle will calculate the
-                      height of base token bins using the current price instead, providing a real-time value view.
-                    </p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            </div>
-            {/* Reset Button - uses visibility to maintain space when hidden */}
-            <button
-              onClick={() => onCurrentPriceChange(initialPrice)}
-              className="px-3 py-1.5 bg-gradient-to-br from-primary/90 to-purple-500/90 hover:from-primary hover:to-purple-500 text-white text-xs rounded-md shadow-lg transition-all duration-200 hover:scale-105 hover:shadow-xl backdrop-blur-sm border border-white/20 font-medium"
-              style={{ visibility: isPriceDifferent ? 'visible' : 'hidden' }}
-              title="Reset current price to initial price"
-            >
-              Reset Price
-            </button>
+          {/* Chart Price Display Toggle - positioned at top */}
+          <div className="flex items-center gap-2 mb-3 px-3 py-1.5 bg-card/80 backdrop-blur-sm rounded-md border border-border/50 shadow-sm self-start">
+            <Switch checked={useCurrentPrice} onCheckedChange={setUseCurrentPrice} />
+            <label className="text-xs text-muted-foreground font-medium whitespace-nowrap">Display Actual {tokenSymbols.quote} Value</label>
+            <TooltipProvider delayDuration={0}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-muted-foreground/30 cursor-help hover:border-muted-foreground/60 transition-colors">
+                    <span className="text-[10px] italic text-muted-foreground font-serif">i</span>
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs">
+                  <p className="text-xs">
+                    By default, the liquidity distribution is displayed in the same manner as the Meteora UI,
+                    showing bin heights based on each bin's price. Enabling this toggle will calculate the
+                    height of base token bins using the current price instead, providing a real-time value view.
+                  </p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           </div>
           <div className="relative w-full flex-grow" ref={chartRef}>
           {/* Liquidity Bins */}
@@ -475,7 +464,19 @@ export function LiquidityChart({
         </div>
 
         {/* Initial Price Slider */}
-        <div className="relative h-8 mt-4 mb-2 w-full">
+        <div className="relative h-8 mb-2 w-full mt-8">
+          {/* Reset Price Button - positioned above the initial price slider handle */}
+          {isPriceDifferent && (
+            <div className="absolute bottom-full mb-2" style={{ left: `${initialPricePosition}%`, transform: 'translateX(-50%)' }}>
+              <button
+                onClick={() => onCurrentPriceChange(initialPrice)}
+                className="px-3 py-1.5 bg-gradient-to-br from-primary/90 to-purple-500/90 hover:from-primary hover:to-purple-500 text-white text-xs rounded-md shadow-lg transition-all duration-200 hover:scale-105 hover:shadow-xl backdrop-blur-sm border border-white/20 font-medium whitespace-nowrap"
+                title="Reset current price to initial price"
+              >
+                Reset Price
+              </button>
+            </div>
+          )}
           <div className="absolute h-2 top-1/2 -translate-y-1/2 w-full bg-gradient-to-r from-secondary/50 via-secondary to-secondary/50 rounded-full shadow-inner" />
           <div
             className="absolute top-1/2 w-5 h-5 bg-gradient-to-br from-primary to-purple-500 rounded-full cursor-pointer border-2 border-background shadow-lg hover:scale-110 hover:shadow-xl"
