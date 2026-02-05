@@ -1350,11 +1350,11 @@ export function DlmmSimulator() {
                     <span className="font-bold text-xl mt-1">{analysis.totalBins}</span>
                   </div>
                   <div className="metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm">
-                    <span className="text-muted-foreground text-xs uppercase tracking-wide">Base Bins</span>
+                    <span className="text-muted-foreground text-xs uppercase tracking-wide">{tokenSymbols.base} Bins</span>
                     <span className="font-bold text-xl mt-1">{analysis.baseBins}</span>
                   </div>
                   <div className="metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm">
-                    <span className="text-muted-foreground text-xs uppercase tracking-wide">Quote Bins</span>
+                    <span className="text-muted-foreground text-xs uppercase tracking-wide">{tokenSymbols.quote} Bins</span>
                     <span className="font-bold text-xl mt-1">{analysis.quoteBins}</span>
                   </div>
                   <div className="metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm">
