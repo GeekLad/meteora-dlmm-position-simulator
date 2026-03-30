@@ -5,7 +5,7 @@
 
 const METEORA_API_BASE = 'https://dlmm.datapi.meteora.ag';
 const PAIRS_ENDPOINT = '/pools';
-const PAGE_SIZE = 100;
+const PAGE_SIZE = 1000;
 
 export interface MeteoraToken {
   mint: string;
