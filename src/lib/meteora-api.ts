@@ -3,13 +3,85 @@
  * Fetches and manages DLMM pool data from the Meteora API
  */
 
-const METEORA_API_BASE = 'https://dlmm-api.meteora.ag';
-const PAIRS_ENDPOINT = '/pair/all_with_pagination';
+const METEORA_API_BASE = 'https://dlmm.datapi.meteora.ag';
+const PAIRS_ENDPOINT = '/pools';
 const PAGE_SIZE = 100;
 
 export interface MeteoraToken {
   mint: string;
   symbol: string;
+}
+
+// Raw API response types
+interface TokenInfo {
+  address: string;
+  name: string;
+  symbol: string;
+  decimals: number;
+  is_verified: boolean;
+  holders?: number;
+  freeze_authority_disabled?: boolean;
+  total_supply?: number;
+  price?: number;
+  market_cap?: number;
+}
+
+interface PoolConfig {
+  bin_step: number;
+  base_fee_pct: number;
+  max_fee_pct: number;
+  protocol_fee_pct: number;
+}
+
+interface VolumeData {
+  '30m'?: number;
+  '1h'?: number;
+  '2h'?: number;
+  '4h'?: number;
+  '12h'?: number;
+  '24h'?: number;
+}
+
+interface RawMeteoraPair {
+  address: string;
+  name: string;
+  token_x: TokenInfo;
+  token_y: TokenInfo;
+  reserve_x: string;
+  reserve_y: string;
+  token_x_amount: number;
+  token_y_amount: number;
+  created_at: number;
+  reward_mint_x: string;
+  reward_mint_y: string;
+  pool_config: PoolConfig;
+  dynamic_fee_pct: number;
+  tvl: number;
+  current_price: number;
+  apr: number;
+  apy: number;
+  has_farm: boolean;
+  farm_apr: number;
+  farm_apy: number;
+  volume: VolumeData;
+  fees: VolumeData;
+  protocol_fees: VolumeData;
+  fee_tvl_ratio: VolumeData;
+  cumulative_metrics: {
+    volume: number;
+    fees: number;
+  };
+  is_blacklisted: boolean;
+  launchpad: string;
+  tags: string[];
+}
+
+interface RawPairsResponse {
+  total: number;
+  pages: number;
+  current_page: number;
+  page_size: number;
+  data: RawMeteoraPair[];
 }
 
 export interface MeteoraPair {
@@ -32,8 +104,8 @@ export interface MeteoraPair {
   reserve_x_amount: number;
   reserve_y_amount: number;
   is_verified: boolean;
-  decimals_x?: number; // Token X decimals (for future API enhancement)
-  decimals_y?: number; // Token Y decimals (for future API enhancement)
+  decimals_x?: number;
+  decimals_y?: number;
 }
 
 export interface PairsResponse {
@@ -49,12 +121,42 @@ export interface LoadingStatus {
 }
 
 /**
+ * Transforms raw API response to the internal MeteoraPair format
+ */
+function transformRawPair(raw: RawMeteoraPair): MeteoraPair {
+  return {
+    address: raw.address,
+    name: raw.name,
+    mint_x: raw.token_x.address,
+    mint_y: raw.token_y.address,
+    bin_step: raw.pool_config.bin_step,
+    current_price: raw.current_price,
+    liquidity: raw.tvl.toString(),
+    trade_volume_24h: raw.volume['24h'] || 0,
+    volume: {
+      min_30: raw.volume['30m'],
+      hour_1: raw.volume['1h'],
+      hour_2: raw.volume['2h'],
+      hour_4: raw.volume['4h'],
+      hour_12: raw.volume['12h'],
+      hour_24: raw.volume['24h']
+    },
+    reserve_x_amount: raw.token_x_amount,
+    reserve_y_amount: raw.token_y_amount,
+    is_verified: raw.token_x.is_verified && raw.token_y.is_verified,
+    decimals_x: raw.token_x.decimals,
+    decimals_y: raw.token_y.decimals
+  };
+}
+
+/**
  * Fetches a single page of DLMM pairs from the Meteora API
  */
 export async function fetchPairsPage(page: number): Promise<PairsResponse> {
   const url = new URL(PAIRS_ENDPOINT, METEORA_API_BASE);
   url.searchParams.set('page', page.toString());
-  url.searchParams.set('limit', PAGE_SIZE.toString());
+  url.searchParams.set('page_size', PAGE_SIZE.toString());
+  url.searchParams.set('sort_by', 'volume_24h:desc');
 
   const response = await fetch(url.toString());
 
@@ -62,7 +164,12 @@ export async function fetchPairsPage(page: number): Promise<PairsResponse> {
     throw new Error(`Failed to fetch pairs: ${response.statusText}`);
   }
 
-  return response.json();
+  const data = (await response.json()) as RawPairsResponse;
+
+  return {
+    pairs: data.data.map(transformRawPair),
+    total: data.total
+  };
 }
 
 /**
@@ -74,7 +181,7 @@ export async function* fetchAllPairs(): AsyncGenerator<{
   total: number;
   shouldContinue: boolean;
 }> {
-  let page = 0;
+  let page = 1;
   let hasMorePages = true;
 
   while (hasMorePages) {
