@@ -39,6 +39,7 @@ interface PositionChangesProps {
   onRemoveTx: (id: string) => void;
   onRestore: () => void;
   onFocusHandled: () => void;
+  emptyHint?: string;
 }
 
 const DUST = 1e-9;
@@ -98,8 +99,9 @@ export function PositionChanges({
   onRemoveTx,
   onRestore,
   onFocusHandled,
+  emptyHint,
 }: PositionChangesProps) {
-  const [mode, setMode] = useState<SimulatedTxType>('add-liquidity');
+  const [mode, setMode] = useState<SimulatedTxType>(positions.length ? 'add-liquidity' : 'add-position');
   const [positionAddress, setPositionAddress] = useState<string>(positions[0]?.positionAddress ?? '');
   const [strategy, setStrategy] = useState<Strategy>('spot');
   const [baseAmount, setBaseAmount] = useState('');
@@ -183,7 +185,7 @@ export function PositionChanges({
         lowerPrice: minP,
         upperPrice: maxP,
         positionAddress: editingId
-          ? (transactions.find(tx => tx.id === editingId)?.positionAddress ?? newSimulatedPositionAddress())
+          ? (transactions.find(tx => tx.id === editingId)?.positionAddress ?? positionAddress ?? newSimulatedPositionAddress())
           : newSimulatedPositionAddress(),
         removeBps: 0,
       });
@@ -228,7 +230,6 @@ export function PositionChanges({
       editTx(createTx);
       return;
     }
-    // Fallback: open create form prefilled from current position display
     const position = positions.find(p => p.positionAddress === address);
     if (!position) return;
     setMode('add-position');
@@ -237,7 +238,7 @@ export function PositionChanges({
     setUpperPrice(String(position.maxPrice));
     setBaseAmount(position.baseAmount > DUST ? String(position.baseAmount) : '');
     setQuoteAmount(position.quoteAmount > DUST ? String(position.quoteAmount) : '');
-    setEditingId(null);
+    setEditingId(`tx-${address}`);
   };
 
   const selectPosition = (address: string, nextMode?: SimulatedTxType) => {
@@ -279,6 +280,9 @@ export function PositionChanges({
       </div>
 
       <div className="max-h-72 space-y-2 overflow-y-auto">
+        {positions.length === 0 && (
+          <p className="text-xs text-muted-foreground">{emptyHint || 'No positions yet. Create one below.'}</p>
+        )}
         {positions.map(position => {
           const isSelected = position.positionAddress === positionAddress && mode !== 'add-position';
           return (
