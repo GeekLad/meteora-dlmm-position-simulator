@@ -155,10 +155,17 @@ export function replayTransactions(
   transactions: SimulatedTransaction[],
   replay: ReplayOptions
 ): LiquiditySlice[] {
-  const slices: LiquiditySlice[] = baseSlices.map(slice => ({
-    ...slice,
-    bins: cloneBins(slice.bins),
-  }));
+  const replacedSimulated = new Set(
+    transactions
+      .filter(tx => tx.type === 'add-position')
+      .map(tx => tx.positionAddress)
+  );
+  const slices: LiquiditySlice[] = baseSlices
+    .filter(slice => !(slice.isSimulatedPosition && replacedSimulated.has(slice.positionAddress)))
+    .map(slice => ({
+      ...slice,
+      bins: cloneBins(slice.bins),
+    }));
   const known = new Set(slices.map(slice => slice.positionAddress));
 
   for (const tx of transactions) {
@@ -297,12 +304,19 @@ export function positionsFromSlices(
     const group = grouped.get(position.positionAddress) ?? [];
     const simulated = simulateSlices(group, currentPrice);
     const amounts = binsToAmounts(simulated, true);
+    const host = group[0];
+    const minPrice = host?.minPrice ?? position.minPrice;
+    const maxPrice = host?.maxPrice ?? position.maxPrice;
     return {
       ...position,
+      minPrice,
+      maxPrice,
+      lowerBinId: host?.lowerBinId ?? position.lowerBinId,
+      upperBinId: host?.upperBinId ?? position.upperBinId,
       baseAmount: amounts.base,
       quoteAmount: amounts.quote,
       valueUsd: amounts.value,
-      isOutOfRange: currentPrice < position.minPrice || currentPrice > position.maxPrice,
+      isOutOfRange: currentPrice < minPrice || currentPrice > maxPrice,
       isSimulated: position.isSimulated === true,
     };
   });

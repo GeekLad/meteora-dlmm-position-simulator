@@ -82,6 +82,104 @@ export const getIdFromPrice = (
 };
 
 
+/** Derive the paired token amount so a position is balanced at `activePrice`. */
+export function pairAmountForStrategy(options: {
+  strategy: Strategy;
+  binStep: number;
+  activePrice: number;
+  lowerPrice: number;
+  upperPrice: number;
+  known: 'base' | 'quote';
+  amount: number;
+  baseDecimals?: number;
+  quoteDecimals?: number;
+  applyDecimalAdjustment?: boolean;
+}): { baseAmount: number; quoteAmount: number } {
+  const {
+    strategy,
+    binStep,
+    activePrice,
+    lowerPrice,
+    upperPrice,
+    known,
+    amount,
+    baseDecimals = 9,
+    quoteDecimals = 6,
+    applyDecimalAdjustment = true,
+  } = options;
+
+  if (!(amount > 0) || !(binStep > 0) || !(activePrice > 0) || !(lowerPrice > 0) || !(upperPrice > lowerPrice)) {
+    return known === 'base'
+      ? { baseAmount: amount, quoteAmount: 0 }
+      : { baseAmount: 0, quoteAmount: amount };
+  }
+
+  const minId = getIdFromPrice(lowerPrice, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+  const maxId = getIdFromPrice(upperPrice, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+  const activeBinId = getIdFromPrice(activePrice, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+
+  let quoteBinsCount: number;
+  let baseBinsCount: number;
+  if (activeBinId < minId) {
+    quoteBinsCount = 0;
+    baseBinsCount = maxId - minId + 1;
+  } else if (activeBinId > maxId) {
+    quoteBinsCount = maxId - minId + 1;
+    baseBinsCount = 0;
+  } else {
+    quoteBinsCount = activeBinId - minId + 1;
+    baseBinsCount = maxId - activeBinId;
+  }
+
+  if (baseBinsCount > 0 && quoteBinsCount === 0) {
+    return known === 'base' ? { baseAmount: amount, quoteAmount: 0 } : { baseAmount: 0, quoteAmount: 0 };
+  }
+  if (quoteBinsCount > 0 && baseBinsCount === 0) {
+    return known === 'quote' ? { baseAmount: 0, quoteAmount: amount } : { baseAmount: 0, quoteAmount: 0 };
+  }
+  if (quoteBinsCount <= 0 || baseBinsCount <= 0) {
+    return { baseAmount: 0, quoteAmount: 0 };
+  }
+
+  let quoteSumWeight = 0;
+  let baseSumWeightOverPrice = 0;
+  if (strategy === 'spot') {
+    for (let id = minId; id <= maxId; id++) {
+      if (id > activeBinId) {
+        const price = getPriceFromId(id, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+        if (price > 0) baseSumWeightOverPrice += 1 / price;
+      }
+    }
+    quoteSumWeight = quoteBinsCount;
+  } else {
+    for (let id = minId; id <= activeBinId; id++) {
+      const dist = activeBinId - id;
+      quoteSumWeight += strategy === 'curve'
+        ? Math.max(1, activeBinId - minId - dist)
+        : dist + 1;
+    }
+    for (let id = activeBinId + 1; id <= maxId; id++) {
+      const dist = id - activeBinId;
+      const weight = strategy === 'curve'
+        ? Math.max(1, maxId - activeBinId - dist)
+        : dist + 1;
+      const price = getPriceFromId(id, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+      if (price > 0) baseSumWeightOverPrice += weight / price;
+    }
+  }
+
+  if (!(quoteSumWeight > 0) || !(baseSumWeightOverPrice > 0)) {
+    return known === 'base'
+      ? { baseAmount: amount, quoteAmount: 0 }
+      : { baseAmount: 0, quoteAmount: amount };
+  }
+
+  if (known === 'base') {
+    return { baseAmount: amount, quoteAmount: amount * (quoteSumWeight / baseSumWeightOverPrice) };
+  }
+  return { baseAmount: amount * (baseSumWeightOverPrice / quoteSumWeight), quoteAmount: amount };
+}
+
 export function getInitialBins(params: SimulationParams): SimulatedBin[] {
   const { binStep, initialPrice, baseAmount, quoteAmount, lowerPrice, upperPrice, strategy } = params;
 

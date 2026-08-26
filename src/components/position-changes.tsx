@@ -1,15 +1,15 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Slider } from '@/components/ui/slider';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Minus, Pencil, Plus, RotateCcw, Trash2 } from 'lucide-react';
-import { formatNumber } from '@/lib/utils';
 import { formatNumberForDisplay } from '@/lib/display-formatting';
 import { formatUSD } from '@/lib/meteora-api';
 import { positionDisplayName, shortenAddress, type WalletPositionDetail } from '@/lib/wallet-positions';
@@ -20,7 +20,7 @@ import {
   type SimulatedTransaction,
   type SimulatedTxType,
 } from '@/lib/position-transactions';
-import type { Strategy } from '@/lib/dlmm';
+import { pairAmountForStrategy, type Strategy } from '@/lib/dlmm';
 
 export interface ChangeFocus {
   mode: SimulatedTxType;
@@ -34,6 +34,11 @@ interface PositionChangesProps {
   tokenSymbols: { base: string; quote: string };
   defaultLowerPrice: number;
   defaultUpperPrice: number;
+  defaultStrategy?: Strategy;
+  binStep: number;
+  baseDecimals: number;
+  quoteDecimals: number;
+  applyDecimalAdjustment: boolean;
   focusRequest: ChangeFocus | null;
   onApply: (tx: SimulatedTransaction) => void;
   onRemoveTx: (id: string) => void;
@@ -94,6 +99,11 @@ export function PositionChanges({
   tokenSymbols,
   defaultLowerPrice,
   defaultUpperPrice,
+  defaultStrategy = 'spot',
+  binStep,
+  baseDecimals,
+  quoteDecimals,
+  applyDecimalAdjustment,
   focusRequest,
   onApply,
   onRemoveTx,
@@ -113,6 +123,8 @@ export function PositionChanges({
   const [upperPrice, setUpperPrice] = useState(String(defaultUpperPrice || ''));
   const [removePct, setRemovePct] = useState(25);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [autoFill, setAutoFill] = useState(false);
+  const lastAutoFilled = useRef<'base' | 'quote' | null>(null);
 
   const positionTitle = (position: WalletPositionDetail) => positionDisplayName(position, positions);
 
@@ -123,8 +135,8 @@ export function PositionChanges({
   };
 
   const seedCreateRange = () => {
-    setLowerPrice(String(currentPrice * 0.95));
-    setUpperPrice(String(currentPrice * 1.05));
+    setLowerPrice(String(defaultLowerPrice || currentPrice * 0.95));
+    setUpperPrice(String(defaultUpperPrice || currentPrice * 1.05));
   };
 
   useEffect(() => {
@@ -144,6 +156,60 @@ export function PositionChanges({
     () => positions.find(position => position.positionAddress === positionAddress),
     [positions, positionAddress]
   );
+
+  const autoFillRange = useMemo(() => {
+    if (mode === 'add-position') {
+      const minP = Number(lowerPrice);
+      const maxP = Number(upperPrice);
+      if (minP > 0 && maxP > minP) return { lower: minP, upper: maxP };
+      return null;
+    }
+    if (selected) return { lower: selected.minPrice, upper: selected.maxPrice };
+    return null;
+  }, [mode, lowerPrice, upperPrice, selected]);
+
+  const fillPairedAmount = (known: 'base' | 'quote', amount: number) => {
+    if (!autoFill || !autoFillRange || !(amount > 0) || !(binStep > 0) || !(currentPrice > 0)) return;
+    const paired = pairAmountForStrategy({
+      strategy,
+      binStep,
+      activePrice: currentPrice,
+      lowerPrice: autoFillRange.lower,
+      upperPrice: autoFillRange.upper,
+      known,
+      amount,
+      baseDecimals,
+      quoteDecimals,
+      applyDecimalAdjustment,
+    });
+    if (known === 'base') setQuoteAmount(paired.quoteAmount ? String(paired.quoteAmount) : '0');
+    else setBaseAmount(paired.baseAmount ? String(paired.baseAmount) : '0');
+    lastAutoFilled.current = known === 'base' ? 'quote' : 'base';
+  };
+
+  useEffect(() => {
+    if (!autoFill || mode === 'remove-liquidity' || !autoFillRange) return;
+    const base = Number(baseAmount) || 0;
+    const quote = Number(quoteAmount) || 0;
+    if (lastAutoFilled.current === 'quote' && base > 0) fillPairedAmount('base', base);
+    else if (lastAutoFilled.current === 'base' && quote > 0) fillPairedAmount('quote', quote);
+    else if (quote > 0) fillPairedAmount('quote', quote);
+    else if (base > 0) fillPairedAmount('base', base);
+    // Intentionally omit amount fields so typing doesn't double-fire via this effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoFill, strategy, autoFillRange, currentPrice, binStep, mode]);
+
+  const onBaseAmountChange = (value: string) => {
+    setBaseAmount(value);
+    const amount = Number(value);
+    if (autoFill && amount > 0) fillPairedAmount('base', amount);
+  };
+
+  const onQuoteAmountChange = (value: string) => {
+    setQuoteAmount(value);
+    const amount = Number(value);
+    if (autoFill && amount > 0) fillPairedAmount('quote', amount);
+  };
 
   const removalPreview = useMemo(() => {
     if (!selected || mode !== 'remove-liquidity') return null;
@@ -254,6 +320,7 @@ export function PositionChanges({
     setUpperPrice(String(position.maxPrice));
     setBaseAmount(position.baseAmount > DUST ? String(position.baseAmount) : '');
     setQuoteAmount(position.quoteAmount > DUST ? String(position.quoteAmount) : '');
+    setStrategy(defaultStrategy);
     setEditingId(`tx-${address}`);
   };
 
@@ -301,7 +368,8 @@ export function PositionChanges({
           <p className="text-xs text-muted-foreground">{emptyHint || 'No positions yet. Create one below.'}</p>
         )}
         {positions.map(position => {
-          const isSelected = position.positionAddress === positionAddress && mode !== 'add-position';
+          const isEditingThis = Boolean(editingId) && mode === 'add-position' && position.positionAddress === positionAddress;
+          const isSelected = (position.positionAddress === positionAddress && mode !== 'add-position') || isEditingThis;
           return (
             <div
               key={position.positionAddress}
@@ -348,7 +416,7 @@ export function PositionChanges({
                 />
               </div>
               <div className="mt-2 flex flex-wrap gap-1" onClick={event => event.stopPropagation()}>
-                {findCreateTx(position.positionAddress) && (
+                {position.isSimulated && (
                   <Button
                     type="button"
                     variant="ghost"
@@ -440,12 +508,16 @@ export function PositionChanges({
                 </div>
               </RadioGroup>
             </div>
+            <div className="flex items-center justify-between rounded-lg border border-border/50 bg-secondary/50 p-3">
+              <Label htmlFor="chg-autoFill" className="cursor-pointer text-sm font-medium">Auto-Fill</Label>
+              <Switch id="chg-autoFill" checked={autoFill} onCheckedChange={setAutoFill} />
+            </div>
             <div className="grid grid-cols-2 gap-2">
               <div className="grid gap-1.5">
                 <Label className="text-xs">{tokenSymbols.base}</Label>
                 <Input
                   value={baseAmount}
-                  onChange={event => setBaseAmount(event.target.value)}
+                  onChange={event => onBaseAmountChange(event.target.value)}
                   placeholder="0"
                 />
               </div>
@@ -453,7 +525,7 @@ export function PositionChanges({
                 <Label className="text-xs">{tokenSymbols.quote}</Label>
                 <Input
                   value={quoteAmount}
-                  onChange={event => setQuoteAmount(event.target.value)}
+                  onChange={event => onQuoteAmountChange(event.target.value)}
                   placeholder="0"
                 />
               </div>
@@ -489,7 +561,17 @@ export function PositionChanges({
         )}
 
         <Button type="button" onClick={apply} className="w-full" disabled={mode !== 'add-position' && !selected}>
-          {editingId ? 'Update' : 'Apply'} at {formatNumber(currentPrice, 6)}
+          {editingId
+            ? mode === 'remove-liquidity'
+              ? `Update removal (${removePct}%)`
+              : mode === 'add-position'
+                ? 'Update position'
+                : 'Update liquidity'
+            : mode === 'remove-liquidity'
+              ? `Remove ${removePct}%`
+              : mode === 'add-position'
+                ? 'Create position'
+                : 'Add liquidity'}
         </Button>
         <p className="text-[11px] text-muted-foreground">
           New liquidity is allocated using the simulated current price, which sets the bin shape and cost basis.

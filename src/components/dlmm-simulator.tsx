@@ -1021,7 +1021,12 @@ export function DlmmSimulator() {
   }
 
   const applySimulatedTx = (tx: SimulatedTransaction) => {
-    if (!walletBins && originalWalletPositions.length === 0 && simulationParams) {
+    if (
+      !walletBins
+      && originalWalletPositions.length === 0
+      && simulationParams
+      && tx.type !== 'add-position'
+    ) {
       const bins = getInitialBins(simulationParams);
       if (bins.length) {
         const seedPrice = typeof currentPrice === 'number' ? currentPrice : simulationParams.initialPrice;
@@ -1286,27 +1291,7 @@ export function DlmmSimulator() {
     && params.binStep > 0
     && currentPrice > 0;
 
-  const formDraftPosition = useMemo((): WalletPositionDetail | null => {
-    if (walletBins || originalWalletPositions.length > 0 || simulatedTxs.length > 0) return null;
-    if (!simulationParams || typeof currentPrice !== 'number') return null;
-    const bins = simulation?.simulatedBins.length
-      ? simulation.simulatedBins
-      : getInitialBins(simulationParams);
-    if (!bins.length) return null;
-    return simulatedPositionDetail({
-      positionAddress: FORM_SEED_POSITION_ADDRESS,
-      minPrice: simulationParams.lowerPrice,
-      maxPrice: simulationParams.upperPrice,
-      lowerBinId: bins[0].id,
-      upperBinId: bins[bins.length - 1].id,
-      currentPrice,
-      bins,
-    });
-  }, [walletBins, originalWalletPositions.length, simulatedTxs.length, simulationParams, currentPrice, simulation?.simulatedBins]);
-
-  const stackedPositions = walletPositions.length > 0
-    ? walletPositions
-    : (formDraftPosition ? [formDraftPosition] : []);
+  const stackedPositions = walletPositions;
 
   const analysis = simulation?.analysis;
 
@@ -1513,144 +1498,6 @@ export function DlmmSimulator() {
                 </Label>
                 <Input id="binStep" type="number" value={params.binStep} onChange={e => handleParamChange('binStep', e.target.value)} className="transition-all duration-300 focus:ring-2 focus:ring-primary/50" disabled={positionInputsLocked} />
               </div>
-            </CardContent>
-          </Card>
-
-          <Card className="border-primary/20 bg-card/50 backdrop-blur-sm hover:border-primary/40 transition-all duration-300">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-lg">
-                <div className="p-2 rounded-lg bg-primary/10">
-                  <Coins className="h-4 w-4 text-primary" />
-                </div>
-                Liquidity Position
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="grid gap-4">
-              {positionInputsLocked && (
-                <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs text-muted-foreground">
-                  {walletBins
-                    ? <>Combined {originalWalletPositions.length} open {originalWalletPositions.length === 1 ? 'position' : 'positions'}
-                      {walletPair ? ` in ${walletPair.pairKey}` : ''}
-                      {simulatedTxs.length > 0 ? ` · ${simulatedTxs.length} simulated ${simulatedTxs.length === 1 ? 'change' : 'changes'}` : ''}.</>
-                    : <>Stacked {stackedPositions.length} simulated {stackedPositions.length === 1 ? 'position' : 'positions'}
-                      {simulatedTxs.length > 0 ? ` · ${simulatedTxs.length} ${simulatedTxs.length === 1 ? 'change' : 'changes'}` : ''}.</>}
-                  {' '}Drag the current price or apply changes below to simulate profit and loss.
-                </div>
-              )}
-              {!positionInputsLocked && (
-              <div className="grid gap-2">
-                <Label className="flex items-center gap-1.5 text-sm font-medium">
-                  <MoveHorizontal className="w-4 h-4 text-primary" />
-                  Strategy
-                </Label>
-                <RadioGroup value={params.strategy} onValueChange={handleStrategyChange} className="flex gap-4">
-                  <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="spot" id="spot" />
-                    <Label htmlFor="spot" className="cursor-pointer">Spot</Label>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="bid-ask" id="bid-ask" />
-                    <Label htmlFor="bid-ask" className="cursor-pointer">Bid-Ask</Label>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="curve" id="curve" />
-                    <Label htmlFor="curve" className="cursor-pointer">Curve</Label>
-                  </div>
-                </RadioGroup>
-              </div>
-              )}
-              <div className="grid gap-2">
-                <Label className="flex items-center gap-1.5 text-sm font-medium">
-                  <ChevronsLeftRight className="w-4 h-4 text-primary" />
-                  Price Range
-                </Label>
-                <div className="grid gap-2">
-                  <div className="flex gap-2">
-                    <Input
-                      id="lowerPrice"
-                      type="text"
-                      placeholder="Min Price"
-                      value={lowerPriceInput}
-                      onChange={e => handleParamChange('lowerPrice', e.target.value)}
-                      onBlur={() => handlePriceBlur('lowerPrice')}
-                      className="flex-1 transition-all duration-300 focus:ring-2 focus:ring-primary/50"
-                      disabled={positionInputsLocked}
-                    />
-                    <div className="relative w-24">
-                      <Input
-                        id="lowerPricePercentage"
-                        type="number"
-                        value={lowerPricePercentage}
-                        onChange={e => handlePricePercentageChange('lower', e.target.value)}
-                        onBlur={() => handlePercentageBlur('lower')}
-                        placeholder="Min %"
-                        className="pr-6 transition-all duration-300 focus:ring-2 focus:ring-primary/50 [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [-moz-appearance:textfield]"
-                        disabled={positionInputsLocked}
-                      />
-                      {lowerPricePercentage !== '' && (
-                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm pointer-events-none">%</span>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex gap-2">
-                    <Input
-                      id="upperPrice"
-                      type="text"
-                      placeholder="Max Price"
-                      value={upperPriceInput}
-                      onChange={e => handleParamChange('upperPrice', e.target.value)}
-                      onBlur={() => handlePriceBlur('upperPrice')}
-                      className="flex-1 transition-all duration-300 focus:ring-2 focus:ring-primary/50"
-                      disabled={positionInputsLocked}
-                    />
-                    <div className="relative w-24">
-                      <Input
-                        id="upperPricePercentage"
-                        type="number"
-                        value={upperPricePercentage}
-                        onChange={e => handlePricePercentageChange('upper', e.target.value)}
-                        onBlur={() => handlePercentageBlur('upper')}
-                        placeholder="Max %"
-                        className="pr-6 transition-all duration-300 focus:ring-2 focus:ring-primary/50 [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [-moz-appearance:textfield]"
-                        disabled={positionInputsLocked}
-                      />
-                      {upperPricePercentage !== '' && (
-                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm pointer-events-none">%</span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-              {!positionInputsLocked && (
-              <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50 border border-border/50">
-                <Label htmlFor="autoFill" className="text-sm font-medium cursor-pointer">Auto-Fill</Label>
-                <Switch id="autoFill" checked={autoFill} onCheckedChange={setAutoFill} />
-              </div>
-              )}
-              <div className="grid gap-2">
-                <Label htmlFor="baseAmount" className="text-sm font-medium">{tokenSymbols.base} Token Amount</Label>
-                <Input
-                  id="baseAmount"
-                  type="text"
-                  value={baseAmountInput}
-                  onChange={e => handleParamChange('baseAmount', e.target.value)}
-                  onBlur={() => handleAmountBlur('baseAmount')}
-                  className="transition-all duration-300 focus:ring-2 focus:ring-primary/50"
-                  disabled={positionInputsLocked}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="quoteAmount" className="text-sm font-medium">{tokenSymbols.quote} Token Amount</Label>
-                <Input
-                  id="quoteAmount"
-                  type="text"
-                  value={quoteAmountInput}
-                  onChange={e => handleParamChange('quoteAmount', e.target.value)}
-                  onBlur={() => handleAmountBlur('quoteAmount')}
-                  className="transition-all duration-300 focus:ring-2 focus:ring-primary/50"
-                  disabled={positionInputsLocked}
-                />
-              </div>
               <div className="grid gap-2">
                 <Label htmlFor="initialPrice" className="text-sm font-medium">{positionInputsLocked && walletBins ? 'Pool Price' : 'Initial Price'}</Label>
                 <Input
@@ -1759,14 +1606,19 @@ export function DlmmSimulator() {
                   transactions={simulatedTxs}
                   currentPrice={currentPrice}
                   tokenSymbols={tokenSymbols}
-                  defaultLowerPrice={currentPrice * 0.95}
-                  defaultUpperPrice={currentPrice * 1.05}
+                  defaultLowerPrice={typeof params.lowerPrice === 'number' ? params.lowerPrice : currentPrice * 0.95}
+                  defaultUpperPrice={typeof params.upperPrice === 'number' ? params.upperPrice : currentPrice * 1.05}
+                  defaultStrategy={params.strategy}
+                  binStep={typeof params.binStep === 'number' ? params.binStep : 0}
+                  baseDecimals={baseDecimals}
+                  quoteDecimals={quoteDecimals}
+                  applyDecimalAdjustment={applyDecimalAdjustment}
                   focusRequest={changeFocus}
                   onApply={applySimulatedTx}
                   onRemoveTx={dropSimulatedTx}
                   onRestore={restoreOriginalPositions}
                   onFocusHandled={() => setChangeFocus(null)}
-                  emptyHint="Fill the form on the left, or create a position below to start stacking."
+                  emptyHint="Create a position below to start the simulation."
                 />
               </CardContent>
             </Card>
