@@ -14,6 +14,7 @@ import {
 } from './dlmm';
 import { fetchPoolByAddress, type MeteoraPair } from './meteora-api';
 import { toSimulatorBinId } from './dlmm-sdk-wrapper';
+import { fetchOnChainCombinedBins } from './onchain-bins';
 
 const METEORA_API_BASE = 'https://dlmm.datapi.meteora.ag';
 const REQUEST_GAP_MS = 40;
@@ -417,17 +418,37 @@ export async function loadPoolSimulation(options: {
     0;
   const fallbackActive = activeBinId || 0;
 
-  const bins = reconstructCombinedBins({
-    positions,
-    binStep: pool.bin_step || summary.binStep,
-    baseDecimals,
-    quoteDecimals,
-    applyDecimalAdjustment,
-    fallbackActiveBinId: fallbackActive,
-  });
+  let bins: SimulatedBin[] = [];
+  try {
+    bins = await fetchOnChainCombinedBins({
+      positionAddresses: positions.map(position => position.positionAddress),
+      binStep: pool.bin_step || summary.binStep,
+      baseDecimals,
+      quoteDecimals,
+      applyDecimalAdjustment,
+      fallbackActiveBinId: fallbackActive,
+    });
+  } catch {
+    bins = [];
+  }
 
-  const combinedBaseAmount = positions.reduce((sum, p) => sum + p.baseAmount, 0);
-  const combinedQuoteAmount = positions.reduce((sum, p) => sum + p.quoteAmount, 0);
+  if (bins.length === 0) {
+    bins = reconstructCombinedBins({
+      positions,
+      binStep: pool.bin_step || summary.binStep,
+      baseDecimals,
+      quoteDecimals,
+      applyDecimalAdjustment,
+      fallbackActiveBinId: fallbackActive,
+    });
+  }
+
+  const combinedBaseAmount = bins.length
+    ? bins.reduce((sum, bin) => sum + (bin.initialTokenType === 'base' ? bin.initialAmount : 0), 0)
+    : positions.reduce((sum, p) => sum + p.baseAmount, 0);
+  const combinedQuoteAmount = bins.length
+    ? bins.reduce((sum, bin) => sum + (bin.initialTokenType === 'quote' ? bin.initialAmount : 0), 0)
+    : positions.reduce((sum, p) => sum + p.quoteAmount, 0);
   const minBinId = positions.length ? Math.min(...positions.map(p => p.lowerBinId)) : 0;
   const maxBinId = positions.length ? Math.max(...positions.map(p => p.upperBinId)) : 0;
   const combinedLowerPrice = bins.length ? bins[0].price : 0;

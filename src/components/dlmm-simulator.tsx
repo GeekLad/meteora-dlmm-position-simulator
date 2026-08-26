@@ -1062,14 +1062,16 @@ export function DlmmSimulator() {
         throw new Error('No open positions found in this pool.');
       }
 
-      const bins = reconstructCombinedBins({
-        positions: loaded.positions,
-        binStep: pool.bin_step || payload.pool.binStep,
-        baseDecimals: poolBaseDecimals,
-        quoteDecimals: poolQuoteDecimals,
-        applyDecimalAdjustment: decimalAdjustment,
-        fallbackActiveBinId: loaded.activeBinId,
-      });
+      const bins = loaded.bins.length
+        ? loaded.bins
+        : reconstructCombinedBins({
+            positions: loaded.positions,
+            binStep: pool.bin_step || payload.pool.binStep,
+            baseDecimals: poolBaseDecimals,
+            quoteDecimals: poolQuoteDecimals,
+            applyDecimalAdjustment: decimalAdjustment,
+            fallbackActiveBinId: loaded.activeBinId,
+          });
 
       const activeBinId = loaded.activeBinId;
       const reconstructedPrice = activeBinId
