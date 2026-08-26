@@ -261,11 +261,18 @@ export function PositionChanges({
         {positions.map(position => {
           const isSelected = position.positionAddress === positionAddress && mode !== 'add-position';
           return (
-            <button
+            <div
               key={position.positionAddress}
-              type="button"
+              role="button"
+              tabIndex={0}
               onClick={() => selectPosition(position.positionAddress)}
-              className={`w-full rounded-md border p-2.5 text-left text-xs transition-colors ${
+              onKeyDown={event => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  selectPosition(position.positionAddress);
+                }
+              }}
+              className={`w-full cursor-pointer rounded-md border p-2.5 text-left text-xs transition-colors ${
                 isSelected
                   ? 'border-primary bg-primary/10'
                   : position.isSimulated
@@ -320,7 +327,7 @@ export function PositionChanges({
                   Remove
                 </Button>
               </div>
-            </button>
+            </div>
           );
         })}
       </div>
