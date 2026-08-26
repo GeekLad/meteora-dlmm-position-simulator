@@ -7,16 +7,11 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Slider } from '@/components/ui/slider';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Pencil, RotateCcw, Trash2 } from 'lucide-react';
+import { Minus, Pencil, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { formatNumber } from '@/lib/utils';
+import { formatNumberForDisplay } from '@/lib/display-formatting';
+import { formatUSD } from '@/lib/meteora-api';
 import { shortenAddress, type WalletPositionDetail } from '@/lib/wallet-positions';
 import {
   describeTransaction,
@@ -44,6 +39,51 @@ interface PositionChangesProps {
   onRemoveTx: (id: string) => void;
   onRestore: () => void;
   onFocusHandled: () => void;
+}
+
+const DUST = 1e-9;
+
+function visibleTokens(
+  base: number,
+  quote: number,
+  outOfRange: boolean
+): { base: number; quote: number } {
+  if (outOfRange) {
+    if (base >= quote && base > DUST) return { base, quote: 0 };
+    if (quote > DUST) return { base: 0, quote };
+    return { base: 0, quote: 0 };
+  }
+  return {
+    base: base > DUST ? base : 0,
+    quote: quote > DUST ? quote : 0,
+  };
+}
+
+function TokenAmounts({
+  base,
+  quote,
+  outOfRange,
+  symbols,
+  prefix,
+}: {
+  base: number;
+  quote: number;
+  outOfRange: boolean;
+  symbols: { base: string; quote: string };
+  prefix?: string;
+}) {
+  const tokens = visibleTokens(base, quote, outOfRange);
+  const parts: string[] = [];
+  if (tokens.base > 0) {
+    parts.push(`${formatNumberForDisplay(tokens.base, { maximumFractionDigits: 4 })} ${symbols.base}`);
+  }
+  if (tokens.quote > 0) {
+    parts.push(`${formatNumberForDisplay(tokens.quote, { maximumFractionDigits: 4 })} ${symbols.quote}`);
+  }
+  if (parts.length === 0) {
+    return <span className="text-muted-foreground">{prefix ? `${prefix} none` : 'No liquidity'}</span>;
+  }
+  return <span>{prefix}{parts.join(' + ')}</span>;
 }
 
 export function PositionChanges({
@@ -87,6 +127,16 @@ export function PositionChanges({
     [positions, positionAddress]
   );
 
+  const removalPreview = useMemo(() => {
+    if (!selected || mode !== 'remove-liquidity') return null;
+    const factor = removePct / 100;
+    return {
+      base: selected.baseAmount * factor,
+      quote: selected.quoteAmount * factor,
+      outOfRange: selected.isOutOfRange,
+    };
+  }, [selected, mode, removePct]);
+
   const resetFormAmounts = () => {
     setBaseAmount('');
     setQuoteAmount('');
@@ -104,8 +154,8 @@ export function PositionChanges({
         type: 'remove-liquidity',
         price,
         strategy,
-        baseAmount: 0,
-        quoteAmount: 0,
+        baseAmount: removalPreview?.base ?? 0,
+        quoteAmount: removalPreview?.quote ?? 0,
         lowerPrice: selected?.minPrice ?? 0,
         upperPrice: selected?.maxPrice ?? 0,
         positionAddress,
@@ -169,133 +219,216 @@ export function PositionChanges({
     setEditingId(tx.id);
   };
 
+  const selectPosition = (address: string, nextMode?: SimulatedTxType) => {
+    setPositionAddress(address);
+    if (nextMode) setMode(nextMode);
+    else if (mode === 'add-position') setMode('add-liquidity');
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-2">
-        <div className="text-sm font-medium">Simulate changes</div>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="h-8"
-          onClick={onRestore}
-          disabled={transactions.length === 0}
-        >
-          <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-          Restore original
-        </Button>
+        <div className="text-sm font-medium">Positions</div>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8"
+            onClick={() => {
+              setMode('add-position');
+              setEditingId(null);
+            }}
+          >
+            <Plus className="mr-1.5 h-3.5 w-3.5" />
+            New
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8"
+            onClick={onRestore}
+            disabled={transactions.length === 0}
+          >
+            <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
+            Restore original
+          </Button>
+        </div>
       </div>
 
-      <Tabs value={mode} onValueChange={(value) => { setMode(value as SimulatedTxType); setEditingId(null); }}>
-        <TabsList className="grid w-full grid-cols-3">
-          <TabsTrigger value="add-liquidity" className="text-xs sm:text-sm">Add liquidity</TabsTrigger>
-          <TabsTrigger value="remove-liquidity" className="text-xs sm:text-sm">Remove</TabsTrigger>
-          <TabsTrigger value="add-position" className="text-xs sm:text-sm">Create</TabsTrigger>
-        </TabsList>
-      </Tabs>
+      <div className="max-h-72 space-y-2 overflow-y-auto">
+        {positions.map(position => {
+          const isSelected = position.positionAddress === positionAddress && mode !== 'add-position';
+          return (
+            <button
+              key={position.positionAddress}
+              type="button"
+              onClick={() => selectPosition(position.positionAddress)}
+              className={`w-full rounded-md border p-2.5 text-left text-xs transition-colors ${
+                isSelected
+                  ? 'border-primary bg-primary/10'
+                  : position.isSimulated
+                    ? 'border-primary/40 bg-secondary/30 hover:border-primary/60'
+                    : 'bg-secondary/30 hover:border-primary/40'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-mono">
+                  {position.isSimulated ? 'Simulated' : shortenAddress(position.positionAddress, 4)}
+                </span>
+                <div className="flex items-center gap-1">
+                  {position.isSimulated && <Badge variant="outline">Simulated</Badge>}
+                  {position.isOutOfRange ? (
+                    <Badge variant="destructive">OOR</Badge>
+                  ) : (
+                    <Badge variant="secondary">In range</Badge>
+                  )}
+                </div>
+              </div>
+              <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
+                <span>{position.minPrice.toPrecision(5)} – {position.maxPrice.toPrecision(5)}</span>
+                <span>{formatUSD(position.valueUsd)}</span>
+              </div>
+              <div className="mt-1 font-medium">
+                <TokenAmounts
+                  base={position.baseAmount}
+                  quote={position.quoteAmount}
+                  outOfRange={position.isOutOfRange}
+                  symbols={tokenSymbols}
+                />
+              </div>
+              <div className="mt-2 flex gap-1" onClick={event => event.stopPropagation()}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2"
+                  onClick={() => selectPosition(position.positionAddress, 'add-liquidity')}
+                >
+                  <Plus className="mr-1 h-3 w-3" />
+                  Add
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2"
+                  onClick={() => selectPosition(position.positionAddress, 'remove-liquidity')}
+                >
+                  <Minus className="mr-1 h-3 w-3" />
+                  Remove
+                </Button>
+              </div>
+            </button>
+          );
+        })}
+      </div>
 
-      {mode !== 'add-position' && (
-        <div className="grid gap-2">
-          <Label className="text-xs">Position</Label>
-          <Select value={positionAddress} onValueChange={setPositionAddress}>
-            <SelectTrigger>
-              <SelectValue placeholder="Select a position" />
-            </SelectTrigger>
-            <SelectContent>
-              {positions.map(position => (
-                <SelectItem key={position.positionAddress} value={position.positionAddress}>
-                  {position.isSimulated ? 'Sim · ' : ''}
-                  {shortenAddress(position.positionAddress, 4)}
-                  {' · '}
-                  {position.minPrice.toPrecision(4)}–{position.maxPrice.toPrecision(4)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {selected && (
-            <p className="text-xs text-muted-foreground">
-              Range {selected.minPrice.toPrecision(5)} – {selected.maxPrice.toPrecision(5)}
-              {selected.isSimulated ? ' · simulated' : ''}
-            </p>
-          )}
+      <div className="space-y-4 border-t border-border/50 pt-3">
+        <div className="text-sm font-medium">
+          {mode === 'add-position'
+            ? 'New position'
+            : selected
+              ? `${mode === 'remove-liquidity' ? 'Remove from' : 'Add to'} ${selected.isSimulated ? 'simulated position' : shortenAddress(selected.positionAddress, 4)}`
+              : 'Select a position'}
         </div>
-      )}
 
-      {mode === 'add-position' && (
-        <div className="grid grid-cols-2 gap-2">
-          <div className="grid gap-1.5">
-            <Label htmlFor="chg-min-price" className="text-xs">Min price</Label>
-            <Input id="chg-min-price" value={lowerPrice} onChange={event => setLowerPrice(event.target.value)} />
-          </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="chg-max-price" className="text-xs">Max price</Label>
-            <Input id="chg-max-price" value={upperPrice} onChange={event => setUpperPrice(event.target.value)} />
-          </div>
-        </div>
-      )}
+        <Tabs value={mode} onValueChange={(value) => { setMode(value as SimulatedTxType); setEditingId(null); }}>
+          <TabsList className="grid w-full grid-cols-3">
+            <TabsTrigger value="add-liquidity" className="text-xs sm:text-sm">Add liquidity</TabsTrigger>
+            <TabsTrigger value="remove-liquidity" className="text-xs sm:text-sm">Remove</TabsTrigger>
+            <TabsTrigger value="add-position" className="text-xs sm:text-sm">Create</TabsTrigger>
+          </TabsList>
+        </Tabs>
 
-      {mode !== 'remove-liquidity' && (
-        <>
-          <div className="grid gap-2">
-            <Label className="text-xs">Strategy</Label>
-            <RadioGroup value={strategy} onValueChange={value => setStrategy(value as Strategy)} className="flex gap-4">
-              <div className="flex items-center space-x-2">
-                <RadioGroupItem value="spot" id="chg-spot" />
-                <Label htmlFor="chg-spot" className="cursor-pointer text-sm">Spot</Label>
-              </div>
-              <div className="flex items-center space-x-2">
-                <RadioGroupItem value="bid-ask" id="chg-bidask" />
-                <Label htmlFor="chg-bidask" className="cursor-pointer text-sm">Bid-Ask</Label>
-              </div>
-              <div className="flex items-center space-x-2">
-                <RadioGroupItem value="curve" id="chg-curve" />
-                <Label htmlFor="chg-curve" className="cursor-pointer text-sm">Curve</Label>
-              </div>
-            </RadioGroup>
-          </div>
+        {mode === 'add-position' && (
           <div className="grid grid-cols-2 gap-2">
             <div className="grid gap-1.5">
-              <Label className="text-xs">{tokenSymbols.base}</Label>
-              <Input
-                value={baseAmount}
-                onChange={event => setBaseAmount(event.target.value)}
-                placeholder="0"
-              />
+              <Label htmlFor="chg-min-price" className="text-xs">Min price</Label>
+              <Input id="chg-min-price" value={lowerPrice} onChange={event => setLowerPrice(event.target.value)} />
             </div>
             <div className="grid gap-1.5">
-              <Label className="text-xs">{tokenSymbols.quote}</Label>
-              <Input
-                value={quoteAmount}
-                onChange={event => setQuoteAmount(event.target.value)}
-                placeholder="0"
-              />
+              <Label htmlFor="chg-max-price" className="text-xs">Max price</Label>
+              <Input id="chg-max-price" value={upperPrice} onChange={event => setUpperPrice(event.target.value)} />
             </div>
           </div>
-        </>
-      )}
+        )}
 
-      {mode === 'remove-liquidity' && (
-        <div className="grid gap-2">
-          <div className="flex items-center justify-between text-xs">
-            <Label>Remove {removePct}%</Label>
-            <span className="text-muted-foreground">of this position</span>
+        {mode !== 'remove-liquidity' && (
+          <>
+            <div className="grid gap-2">
+              <Label className="text-xs">Strategy</Label>
+              <RadioGroup value={strategy} onValueChange={value => setStrategy(value as Strategy)} className="flex gap-4">
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="spot" id="chg-spot" />
+                  <Label htmlFor="chg-spot" className="cursor-pointer text-sm">Spot</Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="bid-ask" id="chg-bidask" />
+                  <Label htmlFor="chg-bidask" className="cursor-pointer text-sm">Bid-Ask</Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="curve" id="chg-curve" />
+                  <Label htmlFor="chg-curve" className="cursor-pointer text-sm">Curve</Label>
+                </div>
+              </RadioGroup>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="grid gap-1.5">
+                <Label className="text-xs">{tokenSymbols.base}</Label>
+                <Input
+                  value={baseAmount}
+                  onChange={event => setBaseAmount(event.target.value)}
+                  placeholder="0"
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label className="text-xs">{tokenSymbols.quote}</Label>
+                <Input
+                  value={quoteAmount}
+                  onChange={event => setQuoteAmount(event.target.value)}
+                  placeholder="0"
+                />
+              </div>
+            </div>
+          </>
+        )}
+
+        {mode === 'remove-liquidity' && (
+          <div className="grid gap-2">
+            <div className="flex items-center justify-between text-xs">
+              <Label>Remove {removePct}%</Label>
+              <span className="text-muted-foreground">of this position</span>
+            </div>
+            <Slider
+              value={[removePct]}
+              min={1}
+              max={100}
+              step={1}
+              onValueChange={([value]) => setRemovePct(value)}
+            />
+            {removalPreview && (
+              <div className="rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs">
+                <TokenAmounts
+                  base={removalPreview.base}
+                  quote={removalPreview.quote}
+                  outOfRange={removalPreview.outOfRange}
+                  symbols={tokenSymbols}
+                  prefix="Removes "
+                />
+              </div>
+            )}
           </div>
-          <Slider
-            value={[removePct]}
-            min={1}
-            max={100}
-            step={1}
-            onValueChange={([value]) => setRemovePct(value)}
-          />
-        </div>
-      )}
+        )}
 
-      <Button type="button" onClick={apply} className="w-full">
-        {editingId ? 'Update' : 'Apply'} at {formatNumber(currentPrice, 6)}
-      </Button>
-      <p className="text-[11px] text-muted-foreground">
-        New liquidity is allocated using the simulated current price, which sets the bin shape and cost basis.
-      </p>
+        <Button type="button" onClick={apply} className="w-full" disabled={mode !== 'add-position' && !selected}>
+          {editingId ? 'Update' : 'Apply'} at {formatNumber(currentPrice, 6)}
+        </Button>
+        <p className="text-[11px] text-muted-foreground">
+          New liquidity is allocated using the simulated current price, which sets the bin shape and cost basis.
+        </p>
+      </div>
 
       <div className="space-y-2 border-t border-border/50 pt-3">
         <div className="text-sm font-medium">Transaction log</div>

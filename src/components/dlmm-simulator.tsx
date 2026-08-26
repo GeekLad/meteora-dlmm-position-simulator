@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { getInitialBins, runSimulation, getIdFromPrice, getPriceFromId, trimEmptyEdgeBins, type SimulationParams, type Analysis, type SimulatedBin, type Strategy } from "@/lib/dlmm";
 import { LiquidityChart } from "@/components/liquidity-chart";
 import { Logo } from "@/components/icons";
-import { Layers, CandlestickChart, Coins, ChevronsLeftRight, Footprints, RefreshCcw, MoveHorizontal, ExternalLink, Wallet, FlaskConical, Loader2, Plus, Minus } from "lucide-react";
+import { Layers, CandlestickChart, Coins, ChevronsLeftRight, Footprints, RefreshCcw, MoveHorizontal, ExternalLink, Wallet, FlaskConical, Loader2 } from "lucide-react";
 import { formatNumber } from "@/lib/utils";
 import { formatNumberForDisplay } from "@/lib/display-formatting";
 import { RadioGroup, RadioGroupItem } from "./ui/radio-group";
@@ -1575,69 +1575,6 @@ export function DlmmSimulator() {
                   disabled={!!walletBins}
                 />
               </div>
-              {walletPositions.length > 0 && (
-                <div className="space-y-2 pt-2 border-t border-border/50">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-sm font-medium">Open positions in this pool</div>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-7 text-xs"
-                      onClick={() => setChangeFocus({ mode: 'add-position' })}
-                    >
-                      <Plus className="mr-1 h-3.5 w-3.5" />
-                      New
-                    </Button>
-                  </div>
-                  <div className="max-h-64 space-y-2 overflow-y-auto">
-                    {walletPositions.map((position) => (
-                      <div
-                        key={position.positionAddress}
-                        className={`rounded-md border bg-secondary/30 p-2 text-xs ${position.isSimulated ? 'border-primary/40' : ''}`}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-mono">{position.isSimulated ? 'Simulated' : shortenAddress(position.positionAddress, 4)}</span>
-                          <div className="flex items-center gap-1">
-                            {position.isSimulated && <Badge variant="outline">Simulated</Badge>}
-                            {position.isOutOfRange ? (
-                              <Badge variant="destructive">OOR</Badge>
-                            ) : (
-                              <Badge variant="secondary">In range</Badge>
-                            )}
-                          </div>
-                        </div>
-                        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
-                          <span>{position.minPrice.toPrecision(5)} – {position.maxPrice.toPrecision(5)}</span>
-                          <span>{formatUSD(position.valueUsd)}</span>
-                        </div>
-                        <div className="mt-2 flex gap-1">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="h-7 px-2"
-                            onClick={() => setChangeFocus({ mode: 'add-liquidity', positionAddress: position.positionAddress })}
-                          >
-                            <Plus className="mr-1 h-3 w-3" />
-                            Add
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="h-7 px-2"
-                            onClick={() => setChangeFocus({ mode: 'remove-liquidity', positionAddress: position.positionAddress })}
-                          >
-                            <Minus className="mr-1 h-3 w-3" />
-                            Remove
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
             </CardContent>
           </Card>
         </div>
@@ -1822,8 +1759,16 @@ export function DlmmSimulator() {
                             {position.isSimulated ? 'Simulated' : shortenAddress(position.positionAddress, 4)}
                           </td>
                           <td className="py-2 pr-3">{position.minPrice.toPrecision(5)} – {position.maxPrice.toPrecision(5)}</td>
-                          <td className="py-2 pr-3"><FormattedNumber value={position.baseAmount} maximumFractionDigits={4} /></td>
-                          <td className="py-2 pr-3"><FormattedNumber value={position.quoteAmount} maximumFractionDigits={4} /></td>
+                          <td className="py-2 pr-3">
+                            {position.isOutOfRange && position.baseAmount < position.quoteAmount
+                              ? '—'
+                              : <FormattedNumber value={position.baseAmount} maximumFractionDigits={4} />}
+                          </td>
+                          <td className="py-2 pr-3">
+                            {position.isOutOfRange && position.quoteAmount <= position.baseAmount
+                              ? '—'
+                              : <FormattedNumber value={position.quoteAmount} maximumFractionDigits={4} />}
+                          </td>
                           <td className="py-2 pr-3">{formatUSD(position.valueUsd)}</td>
                           <td className="py-2">
                             <div className="flex flex-wrap items-center gap-1">

@@ -362,7 +362,11 @@ export function describeTransaction(
 ): string {
   const price = Number.isFinite(tx.price) ? tx.price.toPrecision(5) : '—';
   if (tx.type === 'remove-liquidity') {
-    return `Remove ${(tx.removeBps / 100).toFixed(0)}% at ${price}`;
+    const parts: string[] = [];
+    if (tx.baseAmount > 0) parts.push(`${trimNum(tx.baseAmount)} ${symbols.base}`);
+    if (tx.quoteAmount > 0) parts.push(`${trimNum(tx.quoteAmount)} ${symbols.quote}`);
+    const amount = parts.length ? ` · ${parts.join(' + ')}` : '';
+    return `Remove ${(tx.removeBps / 100).toFixed(0)}%${amount} at ${price}`;
   }
   const parts: string[] = [];
   if (tx.baseAmount > 0) parts.push(`${trimNum(tx.baseAmount)} ${symbols.base}`);
