@@ -1072,9 +1072,13 @@ export function DlmmSimulator() {
       });
 
       const activeBinId = loaded.activeBinId;
-      const exactBinPrice = activeBinId
+      const reconstructedPrice = activeBinId
         ? getPriceFromId(activeBinId, pool.bin_step, poolBaseDecimals, poolQuoteDecimals, decimalAdjustment)
-        : (loaded.activePrice || pool.current_price);
+        : 0;
+      const exactBinPrice =
+        Number.isFinite(reconstructedPrice) && reconstructedPrice > 0
+          ? reconstructedPrice
+          : (loaded.activePrice || pool.current_price);
 
       setSelectedPool(pool);
       setBaseDecimals(poolBaseDecimals);

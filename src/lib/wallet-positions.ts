@@ -13,6 +13,7 @@ import {
   type Strategy,
 } from './dlmm';
 import { fetchPoolByAddress, type MeteoraPair } from './meteora-api';
+import { toSimulatorBinId } from './dlmm-sdk-wrapper';
 
 const METEORA_API_BASE = 'https://dlmm.datapi.meteora.ag';
 const REQUEST_GAP_MS = 40;
@@ -284,13 +285,15 @@ function normalizePosition(raw: Record<string, unknown>): WalletPositionDetail |
   const isClosed = Boolean(pick(raw, 'isClosed', 'is_closed'));
   if (isClosed) return null;
 
+  // Data API returns on-chain bin IDs (bin 0 = price 1.0 in lamports).
+  // The simulator's price helpers use bin 262144 as that reference.
   return {
     positionAddress,
-    lowerBinId: num(pick(raw, 'lowerBinId', 'lower_bin_id')),
-    upperBinId: num(pick(raw, 'upperBinId', 'upper_bin_id')),
+    lowerBinId: toSimulatorBinId(num(pick(raw, 'lowerBinId', 'lower_bin_id'))),
+    upperBinId: toSimulatorBinId(num(pick(raw, 'upperBinId', 'upper_bin_id'))),
     minPrice: num(pick(raw, 'minPrice', 'min_price')),
     maxPrice: num(pick(raw, 'maxPrice', 'max_price')),
-    poolActiveBinId: num(pick(raw, 'poolActiveBinId', 'pool_active_bin_id')),
+    poolActiveBinId: toSimulatorBinId(num(pick(raw, 'poolActiveBinId', 'pool_active_bin_id'))),
     poolActivePrice: num(pick(raw, 'poolActivePrice', 'pool_active_price')),
     isOutOfRange: Boolean(pick(raw, 'isOutOfRange', 'is_out_of_range')),
     createdAt: num(pick(raw, 'createdAt', 'created_at')) || null,
@@ -357,7 +360,9 @@ export function reconstructCombinedBins(options: {
 
   const perPosition = positions
     .filter(position => {
-      const hasRange = position.upperBinId >= position.lowerBinId && (position.lowerBinId !== 0 || position.upperBinId !== 0);
+      const hasRange = Number.isFinite(position.lowerBinId)
+        && Number.isFinite(position.upperBinId)
+        && position.upperBinId >= position.lowerBinId;
       const hasLiquidity = position.baseAmount > 0 || position.quoteAmount > 0;
       return hasRange && hasLiquidity;
     })

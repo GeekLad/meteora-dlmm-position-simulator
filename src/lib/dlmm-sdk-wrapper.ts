@@ -10,6 +10,21 @@
 import Decimal from 'decimal.js';
 
 /**
+ * Simulator-internal bin IDs treat this as price 1.0 (in lamports).
+ * Meteora on-chain / Data API bin IDs treat 0 as that point, so live
+ * position IDs must be shifted by this offset before price conversion.
+ */
+export const SIMULATOR_BIN_ID_OFFSET = 262144;
+
+/**
+ * Convert a Meteora on-chain bin ID into the simulator's internal ID space.
+ */
+export function toSimulatorBinId(onChainBinId: number): number {
+  if (!Number.isFinite(onChainBinId)) return SIMULATOR_BIN_ID_OFFSET;
+  return onChainBinId + SIMULATOR_BIN_ID_OFFSET;
+}
+
+/**
  * Converts a bin ID to a human-readable price using SDK-accurate formulas
  *
  * The DLMM system uses a logarithmic price model where each bin ID represents a discrete price level.
@@ -36,8 +51,7 @@ export function getPriceFromBinId(
    const basis = 1 + binStep / 10000;
 
    // Reference point where price = 1.0 (in lamport terms)
-   // The Meteora SDK uses bin ID 262144 as the reference point
-   const REFERENCE_BIN_ID = 262144;
+   const REFERENCE_BIN_ID = SIMULATOR_BIN_ID_OFFSET;
 
    // Calculate price per lamport using exponential formula
    const exponent = binId - REFERENCE_BIN_ID;
@@ -88,7 +102,7 @@ export function getBinIdFromPrice(
    }
 
    // Reference point where price = 1.0
-   const REFERENCE_BIN_ID = 262144;
+   const REFERENCE_BIN_ID = SIMULATOR_BIN_ID_OFFSET;
 
    let pricePerLamport = price;
 
