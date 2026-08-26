@@ -30,6 +30,17 @@ export function shortenAddress(address: string, chars = 4): string {
   return `${trimmed.slice(0, chars)}…${trimmed.slice(-chars)}`;
 }
 
+export function positionDisplayName(
+  position: Pick<WalletPositionDetail, 'positionAddress' | 'isSimulated'>,
+  all: Pick<WalletPositionDetail, 'positionAddress' | 'isSimulated'>[]
+): string {
+  if (!position.isSimulated) return shortenAddress(position.positionAddress, 4);
+  const simulated = all.filter(item => item.isSimulated);
+  if (simulated.length <= 1) return 'Simulated';
+  const index = simulated.findIndex(item => item.positionAddress === position.positionAddress);
+  return index >= 0 ? `Simulated ${index + 1}` : 'Simulated';
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }

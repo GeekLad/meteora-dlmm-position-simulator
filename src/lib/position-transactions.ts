@@ -112,7 +112,7 @@ export function originalSlices(
   return positions.map(position => ({
     id: `original-${position.positionAddress}`,
     positionAddress: position.positionAddress,
-    isSimulatedPosition: false,
+    isSimulatedPosition: position.isSimulated === true,
     openedAtPrice,
     bins: cloneBins(positionBins[position.positionAddress] ?? []),
     scale: 1,
@@ -303,7 +303,7 @@ export function positionsFromSlices(
       quoteAmount: amounts.quote,
       valueUsd: amounts.value,
       isOutOfRange: currentPrice < position.minPrice || currentPrice > position.maxPrice,
-      isSimulated: false,
+      isSimulated: position.isSimulated === true,
     };
   });
 
@@ -354,6 +354,39 @@ export function newTxId(): string {
 
 export function newSimulatedPositionAddress(): string {
   return `simulated-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+/** Stable address for the first New-position form seed, shared with the simulator. */
+export const FORM_SEED_POSITION_ADDRESS = 'simulated-form-seed';
+
+export function simulatedPositionDetail(options: {
+  positionAddress: string;
+  minPrice: number;
+  maxPrice: number;
+  lowerBinId: number;
+  upperBinId: number;
+  currentPrice: number;
+  bins: SimulatedBin[];
+}): WalletPositionDetail {
+  const amounts = binsToAmounts(options.bins, true);
+  return {
+    positionAddress: options.positionAddress,
+    lowerBinId: options.lowerBinId,
+    upperBinId: options.upperBinId,
+    minPrice: options.minPrice,
+    maxPrice: options.maxPrice,
+    poolActiveBinId: 0,
+    poolActivePrice: options.currentPrice,
+    isOutOfRange: options.currentPrice < options.minPrice || options.currentPrice > options.maxPrice,
+    createdAt: null,
+    baseAmount: amounts.base,
+    quoteAmount: amounts.quote,
+    valueUsd: amounts.value,
+    pnlUsd: 0,
+    pnlPctChange: 0,
+    unclaimedFeesUsd: 0,
+    isSimulated: true,
+  };
 }
 
 export function describeTransaction(

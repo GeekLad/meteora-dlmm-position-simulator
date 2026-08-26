@@ -12,7 +12,7 @@ import { Minus, Pencil, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { formatNumber } from '@/lib/utils';
 import { formatNumberForDisplay } from '@/lib/display-formatting';
 import { formatUSD } from '@/lib/meteora-api';
-import { shortenAddress, type WalletPositionDetail } from '@/lib/wallet-positions';
+import { positionDisplayName, shortenAddress, type WalletPositionDetail } from '@/lib/wallet-positions';
 import {
   describeTransaction,
   newSimulatedPositionAddress,
@@ -101,7 +101,10 @@ export function PositionChanges({
   onFocusHandled,
   emptyHint,
 }: PositionChangesProps) {
-  const [mode, setMode] = useState<SimulatedTxType>(positions.length ? 'add-liquidity' : 'add-position');
+  const [mode, setMode] = useState<SimulatedTxType>(() => {
+    const onlyDrafts = positions.length === 0 || positions.every(position => position.isSimulated);
+    return transactions.length === 0 && onlyDrafts ? 'add-position' : 'add-liquidity';
+  });
   const [positionAddress, setPositionAddress] = useState<string>(positions[0]?.positionAddress ?? '');
   const [strategy, setStrategy] = useState<Strategy>('spot');
   const [baseAmount, setBaseAmount] = useState('');
@@ -110,6 +113,19 @@ export function PositionChanges({
   const [upperPrice, setUpperPrice] = useState(String(defaultUpperPrice || ''));
   const [removePct, setRemovePct] = useState(25);
   const [editingId, setEditingId] = useState<string | null>(null);
+
+  const positionTitle = (position: WalletPositionDetail) => positionDisplayName(position, positions);
+
+  const txPositionLabel = (address: string) => {
+    const match = positions.find(position => position.positionAddress === address);
+    if (match) return positionDisplayName(match, positions);
+    return shortenAddress(address, 4);
+  };
+
+  const seedCreateRange = () => {
+    setLowerPrice(String(currentPrice * 0.95));
+    setUpperPrice(String(currentPrice * 1.05));
+  };
 
   useEffect(() => {
     if (!positionAddress && positions[0]) {
@@ -260,6 +276,7 @@ export function PositionChanges({
             onClick={() => {
               setMode('add-position');
               setEditingId(null);
+              seedCreateRange();
             }}
           >
             <Plus className="mr-1.5 h-3.5 w-3.5" />
@@ -307,7 +324,7 @@ export function PositionChanges({
             >
               <div className="flex items-center justify-between gap-2">
                 <span className="font-mono">
-                  {position.isSimulated ? 'Simulated' : shortenAddress(position.positionAddress, 4)}
+                  {positionTitle(position)}
                 </span>
                 <div className="flex items-center gap-1">
                   {position.isSimulated && <Badge variant="outline">Simulated</Badge>}
@@ -331,7 +348,7 @@ export function PositionChanges({
                 />
               </div>
               <div className="mt-2 flex flex-wrap gap-1" onClick={event => event.stopPropagation()}>
-                {position.isSimulated && (
+                {findCreateTx(position.positionAddress) && (
                   <Button
                     type="button"
                     variant="ghost"
@@ -378,7 +395,12 @@ export function PositionChanges({
               : 'Select a position'}
         </div>
 
-        <Tabs value={mode} onValueChange={(value) => { setMode(value as SimulatedTxType); setEditingId(null); }}>
+        <Tabs value={mode} onValueChange={(value) => {
+          const next = value as SimulatedTxType;
+          setMode(next);
+          setEditingId(null);
+          if (next === 'add-position') seedCreateRange();
+        }}>
           <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="add-liquidity" className="text-xs sm:text-sm">Add liquidity</TabsTrigger>
             <TabsTrigger value="remove-liquidity" className="text-xs sm:text-sm">Remove</TabsTrigger>
@@ -492,7 +514,7 @@ export function PositionChanges({
                       {describeTransaction(tx, tokenSymbols)}
                     </p>
                     <p className="mt-0.5 font-mono text-muted-foreground">
-                      {shortenAddress(tx.positionAddress, 4)}
+                      {txPositionLabel(tx.positionAddress)}
                     </p>
                   </div>
                   <div className="flex shrink-0 gap-1">
