@@ -10,17 +10,28 @@ import { Input } from "@/components/ui/input";
 import { getInitialBins, runSimulation, getIdFromPrice, getPriceFromId, type SimulationParams, type Analysis, type SimulatedBin, type Strategy } from "@/lib/dlmm";
 import { LiquidityChart } from "@/components/liquidity-chart";
 import { Logo } from "@/components/icons";
-import { Layers, CandlestickChart, Coins, ChevronsLeftRight, Footprints, RefreshCcw, MoveHorizontal, ExternalLink } from "lucide-react";
+import { Layers, CandlestickChart, Coins, ChevronsLeftRight, Footprints, RefreshCcw, MoveHorizontal, ExternalLink, Wallet, FlaskConical, Loader2 } from "lucide-react";
 import { formatNumber } from "@/lib/utils";
 import { formatNumberForDisplay } from "@/lib/display-formatting";
 import { RadioGroup, RadioGroupItem } from "./ui/radio-group";
 import { Button } from "./ui/button";
 import { Switch } from "./ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
+import { Badge } from "./ui/badge";
 import { PoolSelector } from "@/components/pool-selector";
+import { WalletLoader } from "@/components/wallet-loader";
 import { ShareButton } from '@/components/share-button';
 import { ThemeToggle } from "@/components/theme-toggle";
-import { MeteoraPair, parseTokenSymbols } from "@/lib/meteora-api";
+import { MeteoraPair, parseTokenSymbols, formatUSD } from "@/lib/meteora-api";
 import { reverseEngineerDecimals } from "@/lib/dlmm-sdk-wrapper";
+import {
+  loadPoolSimulation,
+  reconstructCombinedBins,
+  shortenAddress,
+  type PairGroup,
+  type WalletPoolSummary,
+  type WalletPositionDetail,
+} from "@/lib/wallet-positions";
 
 type PartialSimulationParams = Omit<SimulationParams, 'strategy' | 'binStep' | 'initialPrice' | 'baseAmount' | 'quoteAmount' | 'lowerPrice' | 'upperPrice'> & {
   strategy: Strategy;
@@ -99,6 +110,14 @@ export function DlmmSimulator() {
   const [quoteAmountInput, setQuoteAmountInput] = useState<string>('');
   const [initialPoolAddress, setInitialPoolAddress] = useState<string | null>(null);
   const [clearKey, setClearKey] = useState(0);
+  const [sourceTab, setSourceTab] = useState<'simulate' | 'wallet'>('simulate');
+  const [walletAddress, setWalletAddress] = useState<string | null>(null);
+  const [initialWallet, setInitialWallet] = useState<string | null>(null);
+  const [walletBins, setWalletBins] = useState<SimulatedBin[] | null>(null);
+  const [walletPositions, setWalletPositions] = useState<WalletPositionDetail[]>([]);
+  const [walletPair, setWalletPair] = useState<PairGroup | null>(null);
+  const [isLoadingWalletPool, setIsLoadingWalletPool] = useState(false);
+  const [walletPoolError, setWalletPoolError] = useState<string | null>(null);
   const searchParams = useSearchParams();
   const hasLoadedRef = useRef(false);
   const isEditingPercentageRef = useRef<{ lower: boolean; upper: boolean }>({ lower: false, upper: false });
@@ -135,6 +154,10 @@ export function DlmmSimulator() {
   }, []);
 
   useEffect(() => {
+    if (walletBins) {
+      setInitialBins(walletBins);
+      return;
+    }
     if (simulationParams) {
       const bins = getInitialBins(simulationParams);
       setInitialBins(bins);
@@ -144,7 +167,7 @@ export function DlmmSimulator() {
     } else {
       setInitialBins([]);
     }
-  }, [simulationParams]);
+  }, [simulationParams, walletBins]);
 
   useEffect(() => {
     if (initialBins.length > 0 && typeof currentPrice === 'number' && simulationParams) {
@@ -484,6 +507,13 @@ export function DlmmSimulator() {
     const pool = searchParams.get('pool');
     if (pool) {
       setInitialPoolAddress(pool);
+    }
+
+    const wallet = searchParams.get('wallet');
+    if (wallet) {
+      setInitialWallet(wallet);
+      setWalletAddress(wallet);
+      setSourceTab('wallet');
     }
 
     const binStepStr = searchParams.get('binStep');
@@ -880,6 +910,14 @@ export function DlmmSimulator() {
     setUpperPricePercentage('');
     setBaseAmountInput('');
     setQuoteAmountInput('');
+    setWalletBins(null);
+    setWalletPositions([]);
+    setWalletPair(null);
+    setWalletPoolError(null);
+    setWalletAddress(null);
+    setInitialWallet(null);
+    setInitialPoolAddress(null);
+    setClearKey(prev => prev + 1);
   };
   
   const handleInitialPriceChange = (newInitialPrice: number) => {
@@ -892,6 +930,10 @@ export function DlmmSimulator() {
   }
 
   const handlePoolSelect = (pool: MeteoraPair) => {
+    setWalletBins(null);
+    setWalletPositions([]);
+    setWalletPair(null);
+    setWalletPoolError(null);
     setSelectedPool(pool);
 
     // Update token symbols
@@ -968,6 +1010,94 @@ export function DlmmSimulator() {
 
     // Update current price to match the pool
     setCurrentPrice(exactBinPrice);
+  };
+
+  const handleWalletPoolSelect = async (payload: {
+    wallet: string;
+    pair: PairGroup;
+    pool: WalletPoolSummary;
+  }) => {
+    setWalletAddress(payload.wallet);
+    setWalletPair(payload.pair);
+    setWalletPoolError(null);
+    setIsLoadingWalletPool(true);
+    setAutoFill(false);
+    setTokenSymbols({ base: payload.pair.tokenX, quote: payload.pair.tokenY });
+
+    try {
+      const mintX = payload.pool.tokenXMint || payload.pair.tokenXMint;
+      const mintY = payload.pool.tokenYMint || payload.pair.tokenYMint;
+      const reverseEngineered = reverseEngineerDecimals(
+        payload.pool.poolPrice || 1,
+        payload.pool.binStep || 1,
+        mintX,
+        mintY
+      );
+
+      const loaded = await loadPoolSimulation({
+        wallet: payload.wallet,
+        summary: payload.pool,
+        baseDecimals: reverseEngineered.baseDecimals,
+        quoteDecimals: reverseEngineered.quoteDecimals,
+        applyDecimalAdjustment: reverseEngineered.applyDecimalAdjustment,
+      });
+
+      const pool = loaded.pool;
+      let poolBaseDecimals = reverseEngineered.baseDecimals;
+      let poolQuoteDecimals = reverseEngineered.quoteDecimals;
+      let decimalAdjustment = reverseEngineered.applyDecimalAdjustment;
+
+      if (pool.decimals_x != null && pool.decimals_y != null) {
+        poolBaseDecimals = pool.decimals_x;
+        poolQuoteDecimals = pool.decimals_y;
+        decimalAdjustment = reverseEngineerDecimals(
+          pool.current_price,
+          pool.bin_step,
+          pool.mint_x,
+          pool.mint_y
+        ).applyDecimalAdjustment;
+      }
+
+      const bins = loaded.positions.length
+        ? reconstructCombinedBins({
+            positions: loaded.positions,
+            binStep: pool.bin_step || payload.pool.binStep,
+            baseDecimals: poolBaseDecimals,
+            quoteDecimals: poolQuoteDecimals,
+            applyDecimalAdjustment: decimalAdjustment,
+            fallbackActiveBinId: loaded.activeBinId,
+          })
+        : loaded.bins;
+
+      const activeBinId = loaded.activeBinId;
+      const exactBinPrice = activeBinId
+        ? getPriceFromId(activeBinId, pool.bin_step, poolBaseDecimals, poolQuoteDecimals, decimalAdjustment)
+        : (loaded.activePrice || pool.current_price);
+
+      setSelectedPool(pool);
+      setBaseDecimals(poolBaseDecimals);
+      setQuoteDecimals(poolQuoteDecimals);
+      setApplyDecimalAdjustment(decimalAdjustment);
+      setDecimalsDetermined(true);
+      setWalletPositions(loaded.positions);
+      setWalletBins(bins.length ? bins : loaded.bins);
+      setParams({
+        strategy: 'spot',
+        binStep: pool.bin_step || payload.pool.binStep,
+        initialPrice: exactBinPrice,
+        baseAmount: loaded.combinedBaseAmount,
+        quoteAmount: loaded.combinedQuoteAmount,
+        lowerPrice: loaded.combinedLowerPrice || (bins[0]?.price ?? exactBinPrice),
+        upperPrice: loaded.combinedUpperPrice || (bins[bins.length - 1]?.price ?? exactBinPrice),
+      });
+      setCurrentPrice(exactBinPrice);
+    } catch (error) {
+      setWalletBins(null);
+      setWalletPositions([]);
+      setWalletPoolError(error instanceof Error ? error.message : 'Failed to load pool positions');
+    } finally {
+      setIsLoadingWalletPool(false);
+    }
   };
 
   const analysis = simulation?.analysis;
@@ -1099,7 +1229,7 @@ export function DlmmSimulator() {
           </div>
         </div>
         <div className="flex gap-2">
-          <ShareButton params={params} currentPrice={currentPrice} selectedPool={selectedPool} autoFill={autoFill} disabled={!simulationParams} />
+          <ShareButton params={params} currentPrice={currentPrice} selectedPool={selectedPool} autoFill={autoFill} wallet={walletAddress} disabled={!simulationParams} />
           <Button variant="outline" size="sm" onClick={handleClear} className="hover:bg-primary/10 transition-all duration-300">
             <RefreshCcw className="mr-2 h-4 w-4" />Clear All
           </Button>
@@ -1111,11 +1241,51 @@ export function DlmmSimulator() {
         <div className="lg:col-span-1 flex flex-col gap-6">
           <Card className="border-primary/20 bg-card/50 backdrop-blur-sm hover:border-primary/40 transition-all duration-300">
             <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-lg">Search for a Pool</CardTitle>
-              <CardDescription>Search and select a Meteora DLMM pool to simulate, or manually enter the position information below.</CardDescription>
+              <CardTitle className="flex items-center gap-2 text-lg">Load a Position</CardTitle>
+              <CardDescription>
+                Search live pools to model a new position, or paste a wallet to simulate your open liquidity.
+              </CardDescription>
             </CardHeader>
             <CardContent>
-              <PoolSelector key={clearKey} onSelectPool={handlePoolSelect} selectedPool={selectedPool} initialPoolAddress={initialPoolAddress} />
+              <Tabs
+                value={sourceTab}
+                onValueChange={(value) => setSourceTab(value as 'simulate' | 'wallet')}
+              >
+                <TabsList className="grid w-full grid-cols-2 mb-4">
+                  <TabsTrigger value="simulate" className="gap-1.5">
+                    <FlaskConical className="h-4 w-4" />
+                    New position
+                  </TabsTrigger>
+                  <TabsTrigger value="wallet" className="gap-1.5">
+                    <Wallet className="h-4 w-4" />
+                    My positions
+                  </TabsTrigger>
+                </TabsList>
+                <TabsContent value="simulate">
+                  <PoolSelector key={clearKey} onSelectPool={handlePoolSelect} selectedPool={walletBins ? null : selectedPool} initialPoolAddress={sourceTab === 'simulate' ? initialPoolAddress : null} />
+                </TabsContent>
+                <TabsContent value="wallet">
+                  <WalletLoader
+                    key={`wallet-${clearKey}`}
+                    onSelectPool={handleWalletPoolSelect}
+                    selectedPoolAddress={walletBins ? selectedPool?.address : null}
+                    initialWallet={initialWallet}
+                    initialPoolAddress={sourceTab === 'wallet' ? initialPoolAddress : null}
+                    disabled={isLoadingWalletPool}
+                  />
+                  {isLoadingWalletPool && (
+                    <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Loading position details…
+                    </div>
+                  )}
+                  {walletPoolError && (
+                    <div className="mt-3 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+                      {walletPoolError}
+                    </div>
+                  )}
+                </TabsContent>
+              </Tabs>
             </CardContent>
           </Card>
 
@@ -1134,7 +1304,7 @@ export function DlmmSimulator() {
                   <Footprints className="w-4 h-4 text-primary" />
                   Bin Step
                 </Label>
-                <Input id="binStep" type="number" value={params.binStep} onChange={e => handleParamChange('binStep', e.target.value)} className="transition-all duration-300 focus:ring-2 focus:ring-primary/50" />
+                <Input id="binStep" type="number" value={params.binStep} onChange={e => handleParamChange('binStep', e.target.value)} className="transition-all duration-300 focus:ring-2 focus:ring-primary/50" disabled={!!walletBins} />
               </div>
             </CardContent>
           </Card>
@@ -1149,6 +1319,14 @@ export function DlmmSimulator() {
               </CardTitle>
             </CardHeader>
             <CardContent className="grid gap-4">
+              {walletBins && (
+                <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs text-muted-foreground">
+                  Combined {walletPositions.length} open {walletPositions.length === 1 ? 'position' : 'positions'}
+                  {walletPair ? ` in ${walletPair.pairKey}` : ''}. Drag the current price on the chart to simulate
+                  profit and loss. Liquidity is reconstructed from current balances across each position's bin range.
+                </div>
+              )}
+              {!walletBins && (
               <div className="grid gap-2">
                 <Label className="flex items-center gap-1.5 text-sm font-medium">
                   <MoveHorizontal className="w-4 h-4 text-primary" />
@@ -1169,6 +1347,7 @@ export function DlmmSimulator() {
                   </div>
                 </RadioGroup>
               </div>
+              )}
               <div className="grid gap-2">
                 <Label className="flex items-center gap-1.5 text-sm font-medium">
                   <ChevronsLeftRight className="w-4 h-4 text-primary" />
@@ -1184,6 +1363,7 @@ export function DlmmSimulator() {
                       onChange={e => handleParamChange('lowerPrice', e.target.value)}
                       onBlur={() => handlePriceBlur('lowerPrice')}
                       className="flex-1 transition-all duration-300 focus:ring-2 focus:ring-primary/50"
+                      disabled={!!walletBins}
                     />
                     <div className="relative w-24">
                       <Input
@@ -1194,6 +1374,7 @@ export function DlmmSimulator() {
                         onBlur={() => handlePercentageBlur('lower')}
                         placeholder="Min %"
                         className="pr-6 transition-all duration-300 focus:ring-2 focus:ring-primary/50 [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [-moz-appearance:textfield]"
+                        disabled={!!walletBins}
                       />
                       {lowerPricePercentage !== '' && (
                         <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm pointer-events-none">%</span>
@@ -1209,6 +1390,7 @@ export function DlmmSimulator() {
                       onChange={e => handleParamChange('upperPrice', e.target.value)}
                       onBlur={() => handlePriceBlur('upperPrice')}
                       className="flex-1 transition-all duration-300 focus:ring-2 focus:ring-primary/50"
+                      disabled={!!walletBins}
                     />
                     <div className="relative w-24">
                       <Input
@@ -1219,6 +1401,7 @@ export function DlmmSimulator() {
                         onBlur={() => handlePercentageBlur('upper')}
                         placeholder="Max %"
                         className="pr-6 transition-all duration-300 focus:ring-2 focus:ring-primary/50 [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [-moz-appearance:textfield]"
+                        disabled={!!walletBins}
                       />
                       {upperPricePercentage !== '' && (
                         <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm pointer-events-none">%</span>
@@ -1227,10 +1410,12 @@ export function DlmmSimulator() {
                   </div>
                 </div>
               </div>
+              {!walletBins && (
               <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50 border border-border/50">
                 <Label htmlFor="autoFill" className="text-sm font-medium cursor-pointer">Auto-Fill</Label>
                 <Switch id="autoFill" checked={autoFill} onCheckedChange={setAutoFill} />
               </div>
+              )}
               <div className="grid gap-2">
                 <Label htmlFor="baseAmount" className="text-sm font-medium">{tokenSymbols.base} Token Amount</Label>
                 <Input
@@ -1240,6 +1425,7 @@ export function DlmmSimulator() {
                   onChange={e => handleParamChange('baseAmount', e.target.value)}
                   onBlur={() => handleAmountBlur('baseAmount')}
                   className="transition-all duration-300 focus:ring-2 focus:ring-primary/50"
+                  disabled={!!walletBins}
                 />
               </div>
               <div className="grid gap-2">
@@ -1251,10 +1437,11 @@ export function DlmmSimulator() {
                   onChange={e => handleParamChange('quoteAmount', e.target.value)}
                   onBlur={() => handleAmountBlur('quoteAmount')}
                   className="transition-all duration-300 focus:ring-2 focus:ring-primary/50"
+                  disabled={!!walletBins}
                 />
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="initialPrice" className="text-sm font-medium">Initial Price</Label>
+                <Label htmlFor="initialPrice" className="text-sm font-medium">{walletBins ? 'Pool Price' : 'Initial Price'}</Label>
                 <Input
                   id="initialPrice"
                   type="text"
@@ -1262,8 +1449,32 @@ export function DlmmSimulator() {
                   onChange={e => handleParamChange('initialPrice', e.target.value)}
                   onBlur={() => handlePriceBlur('initialPrice')}
                   className="transition-all duration-300 focus:ring-2 focus:ring-primary/50"
+                  disabled={!!walletBins}
                 />
               </div>
+              {walletPositions.length > 0 && (
+                <div className="space-y-2 pt-2 border-t border-border/50">
+                  <div className="text-sm font-medium">Open positions in this pool</div>
+                  <div className="max-h-56 space-y-2 overflow-y-auto">
+                    {walletPositions.map((position) => (
+                      <div key={position.positionAddress} className="rounded-md border bg-secondary/30 p-2 text-xs">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-mono">{shortenAddress(position.positionAddress, 4)}</span>
+                          {position.isOutOfRange ? (
+                            <Badge variant="destructive">OOR</Badge>
+                          ) : (
+                            <Badge variant="secondary">In range</Badge>
+                          )}
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
+                          <span>{position.minPrice.toPrecision(5)} – {position.maxPrice.toPrecision(5)}</span>
+                          <span>{formatUSD(position.valueUsd)}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -1277,6 +1488,7 @@ export function DlmmSimulator() {
                 </div>
                 <span>
                   {selectedPool && params.binStep ? `Liquidity Distribution for ${selectedPool.name} ${params.binStep} Bin Step` : 'Liquidity Distribution'}
+                  {walletBins && walletPositions.length > 1 ? ` · ${walletPositions.length} positions combined` : ''}
                 </span>
                 {selectedPool && (
                   <a
@@ -1292,6 +1504,39 @@ export function DlmmSimulator() {
               </CardTitle>
             </CardHeader>
             <CardContent className="flex-grow flex flex-col gap-4 pt-2">
+              {walletBins && typeof currentPrice === 'number' && typeof params.initialPrice === 'number' && typeof params.binStep === 'number' && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-muted-foreground mr-1">Price shock</span>
+                  {[-25, -10, -5, -1, 0, 1, 5, 10, 25].map((pct) => (
+                    <Button
+                      key={pct}
+                      type="button"
+                      variant={pct === 0 ? 'secondary' : 'outline'}
+                      size="sm"
+                      className="h-8 px-2.5 text-xs"
+                      onClick={() => {
+                        if (pct === 0) {
+                          handleCurrentPriceChange(params.initialPrice as number);
+                          return;
+                        }
+                        const target = (params.initialPrice as number) * (1 + pct / 100);
+                        const binId = getIdFromPrice(
+                          target,
+                          params.binStep as number,
+                          baseDecimals,
+                          quoteDecimals,
+                          applyDecimalAdjustment
+                        );
+                        handleCurrentPriceChange(
+                          getPriceFromId(binId, params.binStep as number, baseDecimals, quoteDecimals, applyDecimalAdjustment)
+                        );
+                      }}
+                    >
+                      {pct === 0 ? 'Reset' : `${pct > 0 ? '+' : ''}${pct}%`}
+                    </Button>
+                  ))}
+                </div>
+              )}
               <div className="h-80 w-full">
                 {simulationParams && decimalsDetermined && typeof currentPrice === 'number' && typeof params.initialPrice === 'number' && typeof params.lowerPrice === 'number' && typeof params.upperPrice === 'number' ? (
                   <LiquidityChart
@@ -1304,6 +1549,8 @@ export function DlmmSimulator() {
                     strategy={params.strategy}
                     onCurrentPriceChange={handleCurrentPriceChange}
                     onInitialPriceChange={handleInitialPriceChange}
+                    lockInitialPrice={!!walletBins}
+                    initialPriceLabel={walletBins ? 'Pool Price' : undefined}
                   />
                 ) : <div className="flex items-center justify-center h-full text-muted-foreground">Enter parameters to see chart.</div>}
               </div>
@@ -1364,6 +1611,41 @@ export function DlmmSimulator() {
                 </div>
               ) : (
                 <p className="text-muted-foreground">Adjust parameters to see analysis.</p>
+              )}
+              {walletPositions.length > 0 && analysis && (
+                <div className="mt-6 overflow-x-auto">
+                  <div className="mb-2 text-sm font-medium">Combined positions</div>
+                  <table className="w-full text-xs">
+                    <thead className="text-muted-foreground">
+                      <tr className="border-b border-border/60 text-left">
+                        <th className="py-2 pr-3 font-medium">Position</th>
+                        <th className="py-2 pr-3 font-medium">Range</th>
+                        <th className="py-2 pr-3 font-medium">{tokenSymbols.base}</th>
+                        <th className="py-2 pr-3 font-medium">{tokenSymbols.quote}</th>
+                        <th className="py-2 pr-3 font-medium">Value</th>
+                        <th className="py-2 font-medium">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {walletPositions.map((position) => (
+                        <tr key={position.positionAddress} className="border-b border-border/40">
+                          <td className="py-2 pr-3 font-mono">{shortenAddress(position.positionAddress, 4)}</td>
+                          <td className="py-2 pr-3">{position.minPrice.toPrecision(5)} – {position.maxPrice.toPrecision(5)}</td>
+                          <td className="py-2 pr-3"><FormattedNumber value={position.baseAmount} maximumFractionDigits={4} /></td>
+                          <td className="py-2 pr-3"><FormattedNumber value={position.quoteAmount} maximumFractionDigits={4} /></td>
+                          <td className="py-2 pr-3">{formatUSD(position.valueUsd)}</td>
+                          <td className="py-2">
+                            {position.isOutOfRange ? (
+                              <span className="text-red-400">Out of range</span>
+                            ) : (
+                              <span className="text-green-400">In range</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </CardContent>
           </Card>

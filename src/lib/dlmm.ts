@@ -182,6 +182,203 @@ export function getInitialBins(params: SimulationParams): SimulatedBin[] {
   return bins.sort((a, b) => a.price - b.price);
 }
 
+export interface BinRangeParams {
+  binStep: number;
+  minBinId: number;
+  maxBinId: number;
+  activeBinId: number;
+  baseAmount: number;
+  quoteAmount: number;
+  strategy: Strategy;
+  baseDecimals?: number;
+  quoteDecimals?: number;
+  applyDecimalAdjustment?: boolean;
+}
+
+/**
+ * Builds initial bins from explicit bin IDs (used for live wallet positions).
+ * Avoids price→bin round-trip so the reconstructed range matches on-chain bins.
+ */
+export function getInitialBinsForBinRange(params: BinRangeParams): SimulatedBin[] {
+  const { binStep, minBinId, maxBinId, activeBinId, baseAmount, quoteAmount, strategy } = params;
+  const baseDecimals = params.baseDecimals ?? 9;
+  const quoteDecimals = params.quoteDecimals ?? 6;
+  const applyDecimalAdjustment = params.applyDecimalAdjustment ?? true;
+
+  if (binStep <= 0 || maxBinId < minBinId) {
+    return [];
+  }
+
+  const weights = calculateStrategyWeights(strategy, minBinId, maxBinId, activeBinId);
+  const binPrices = new Map<number, number>();
+  for (let id = minBinId; id <= maxBinId; id++) {
+    binPrices.set(id, getPriceFromId(id, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment));
+  }
+
+  const initialPrice = binPrices.get(activeBinId) ?? getPriceFromId(
+    activeBinId,
+    binStep,
+    baseDecimals,
+    quoteDecimals,
+    applyDecimalAdjustment
+  );
+
+  if (initialPrice <= 0) {
+    return [];
+  }
+
+  const amounts = weightsToAmounts(
+    weights,
+    baseAmount,
+    quoteAmount,
+    activeBinId,
+    binPrices,
+    strategy,
+    initialPrice
+  );
+
+  const bins: SimulatedBin[] = [];
+  for (let id = minBinId; id <= maxBinId; id++) {
+    const price = binPrices.get(id)!;
+    const amount = amounts.get(id) || { baseAmount: 0, quoteAmount: 0, valueInQuote: 0 };
+    const isQuoteBin = id <= activeBinId;
+    const tokenType = isQuoteBin ? 'quote' : 'base';
+    const tokenAmount = isQuoteBin ? amount.quoteAmount : amount.baseAmount;
+    const decimalAdjustment = quoteDecimals - baseDecimals;
+    const pricePerLamport = new Decimal(price).mul(Decimal.pow(10, decimalAdjustment)).toNumber();
+
+    bins.push({
+      id,
+      price,
+      pricePerLamport,
+      initialTokenType: tokenType,
+      initialAmount: tokenAmount,
+      initialValueInQuote: amount.valueInQuote,
+      currentTokenType: tokenType,
+      currentAmount: tokenAmount,
+      currentValueInQuote: amount.valueInQuote,
+    });
+  }
+
+  const calculatedBaseSum = bins.reduce((sum, bin) => bin.initialTokenType === 'base' ? sum + bin.initialAmount : sum, 0);
+  const calculatedQuoteSum = bins.reduce((sum, bin) => bin.initialTokenType === 'quote' ? sum + bin.initialAmount : sum, 0);
+
+  if (baseAmount > 0 && calculatedBaseSum > 0) {
+    const baseCorrectionFactor = baseAmount / calculatedBaseSum;
+    bins.forEach(bin => {
+      if (bin.initialTokenType === 'base') {
+        bin.initialAmount *= baseCorrectionFactor;
+        bin.initialValueInQuote = bin.initialAmount * initialPrice;
+        bin.currentAmount = bin.initialAmount;
+        bin.currentValueInQuote = bin.initialValueInQuote;
+      }
+    });
+  }
+
+  if (quoteAmount > 0 && calculatedQuoteSum > 0) {
+    const quoteCorrectionFactor = quoteAmount / calculatedQuoteSum;
+    bins.forEach(bin => {
+      if (bin.initialTokenType === 'quote') {
+        bin.initialAmount *= quoteCorrectionFactor;
+        bin.initialValueInQuote = bin.initialAmount;
+        bin.currentAmount = bin.initialAmount;
+        bin.currentValueInQuote = bin.initialValueInQuote;
+      }
+    });
+  }
+
+  return bins.sort((a, b) => a.price - b.price);
+}
+
+
+export interface MergeBinsOptions {
+  binStep: number;
+  baseDecimals: number;
+  quoteDecimals: number;
+  applyDecimalAdjustment: boolean;
+  activeBinId: number;
+  fillGaps?: boolean;
+  maxFilledBins?: number;
+}
+
+/**
+ * Overlays multiple position bin arrays onto a single distribution.
+ * Amounts on the same bin ID are summed so several positions in one pool
+ * can be simulated together.
+ */
+export function mergeSimulatedBins(
+  binSets: SimulatedBin[][],
+  options: MergeBinsOptions
+): SimulatedBin[] {
+  const merged = new Map<number, SimulatedBin>();
+
+  for (const bins of binSets) {
+    for (const bin of bins) {
+      const existing = merged.get(bin.id);
+      if (!existing) {
+        merged.set(bin.id, { ...bin });
+        continue;
+      }
+      existing.initialAmount += bin.initialAmount;
+      existing.initialValueInQuote += bin.initialValueInQuote;
+      existing.currentAmount += bin.currentAmount;
+      existing.currentValueInQuote += bin.currentValueInQuote;
+      if (bin.initialAmount > existing.initialAmount) {
+        existing.initialTokenType = bin.initialTokenType;
+      }
+      if (bin.currentAmount > existing.currentAmount) {
+        existing.currentTokenType = bin.currentTokenType;
+      }
+    }
+  }
+
+  if (merged.size === 0) return [];
+
+  const ids = Array.from(merged.keys()).sort((a, b) => a - b);
+  const minId = ids[0];
+  const maxId = ids[ids.length - 1];
+  const span = maxId - minId + 1;
+  const maxFilled = options.maxFilledBins ?? 500;
+  const shouldFill = options.fillGaps !== false && span <= maxFilled;
+
+  const result: SimulatedBin[] = [];
+  if (!shouldFill) {
+    return ids.map(id => merged.get(id)!);
+  }
+
+  for (let id = minId; id <= maxId; id++) {
+    const existing = merged.get(id);
+    if (existing) {
+      result.push(existing);
+      continue;
+    }
+    const price = getPriceFromId(
+      id,
+      options.binStep,
+      options.baseDecimals,
+      options.quoteDecimals,
+      options.applyDecimalAdjustment
+    );
+    const decimalAdjustment = options.quoteDecimals - options.baseDecimals;
+    const pricePerLamport = new Decimal(price).mul(Decimal.pow(10, decimalAdjustment)).toNumber();
+    const isQuote = id <= options.activeBinId;
+    result.push({
+      id,
+      price,
+      pricePerLamport,
+      initialTokenType: isQuote ? 'quote' : 'base',
+      initialAmount: 0,
+      initialValueInQuote: 0,
+      currentTokenType: isQuote ? 'quote' : 'base',
+      currentAmount: 0,
+      currentValueInQuote: 0,
+    });
+  }
+
+  return result;
+}
+
+
 
 /**
  * Runs a position simulation at a different price point

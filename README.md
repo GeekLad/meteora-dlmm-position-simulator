@@ -13,7 +13,16 @@ total value of their liquidity as the price moves up and down.
 
 ## Features
 
-### Search for Real Meteora DLMM Pools
+### Load Open Positions from a Wallet
+
+Paste a Solana wallet address to load every open DLMM position into the simulator.
+
+Positions are grouped by trading pair (for example SOL-USDC). Drill into a pair to see the individual pools you have liquidity in — you can have several pools for the same pair with different bin steps and fees — then open a pool to simulate **all of its positions combined**. Drag the current price to see how the combined position value, token mix, and profit/loss change.
+
+![Load Wallet Positions](public/screenshots/search-pools.png)
+
+The share URL can include `?wallet=<address>` (and optionally `&pool=<poolAddress>`) so you can send someone a loaded portfolio.
+
 
 Search and select from live Meteora DLMM pools to instantly load real market
 data into the simulator. This allows you to simulate positions based on actual

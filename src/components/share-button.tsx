@@ -22,10 +22,11 @@ interface ShareButtonProps {
   currentPrice: number | '';
   selectedPool: MeteoraPair | null;
   autoFill: boolean;
+  wallet?: string | null;
   disabled?: boolean;
 }
 
-export function ShareButton({ params, currentPrice, selectedPool, autoFill, disabled = false }: ShareButtonProps) {
+export function ShareButton({ params, currentPrice, selectedPool, autoFill, wallet, disabled = false }: ShareButtonProps) {
   const { toast } = useToast();
 
   const [baseUrl, setBaseUrl] = useState('');
@@ -41,6 +42,10 @@ export function ShareButton({ params, currentPrice, selectedPool, autoFill, disa
     // Only include non-default values
     if (selectedPool) {
       searchParams.set('pool', selectedPool.address);
+    }
+
+    if (wallet) {
+      searchParams.set('wallet', wallet);
     }
 
     if (params.binStep !== '') {
@@ -81,7 +86,7 @@ export function ShareButton({ params, currentPrice, selectedPool, autoFill, disa
 
     const queryString = searchParams.toString();
     return queryString ? `${baseUrl}?${queryString}` : baseUrl;
-  }, [params, currentPrice, selectedPool, autoFill]);
+  }, [params, currentPrice, selectedPool, autoFill, wallet, baseUrl]);
 
   const handleShare = async () => {
     try {

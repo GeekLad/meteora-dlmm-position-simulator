@@ -224,9 +224,18 @@ export async function* fetchAllPairs(): AsyncGenerator<{
 }
 
 /**
- * Parses token symbols from the pair name
- * Expected format: "TOKEN1-TOKEN2" or similar
+ * Fetches a single DLMM pool by address
  */
+export async function fetchPoolByAddress(address: string): Promise<MeteoraPair | null> {
+  const url = `${METEORA_API_BASE}/pools/${address}`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    return null;
+  }
+  const data = await response.json() as RawMeteoraPair;
+  return transformRawPair(data);
+}
+
 export function parseTokenSymbols(pairName: string): { base: string; quote: string } {
   // Try to split on common delimiters
   const delimiters = ['-', '/', '_'];
