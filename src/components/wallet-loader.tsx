@@ -142,6 +142,14 @@ export function WalletLoader({
 
   const handleSelectPair = (pair: PairGroup) => {
     setSelectedPair(pair);
+    if (pair.pools.length === 1) {
+      onSelectPool({
+        wallet: loadedWallet ?? walletInput,
+        pair,
+        pool: pair.pools[0],
+      });
+      return;
+    }
     setLevel('pools');
   };
 
@@ -224,12 +232,16 @@ export function WalletLoader({
 
           {level === 'pairs' && (
             <div className="max-h-[420px] space-y-2 overflow-y-auto rounded-lg border p-2">
-              {portfolio.pairs.map((pair) => (
+              {portfolio.pairs.map((pair) => {
+                const isActive = pair.pools.some(pool => pool.poolAddress === selectedPoolAddress);
+                return (
                 <button
                   key={pair.pairKey}
                   type="button"
                   onClick={() => handleSelectPair(pair)}
-                  className="flex w-full items-center gap-3 rounded-md border p-3 text-left transition-colors hover:bg-accent"
+                  className={`flex w-full items-center gap-3 rounded-md border p-3 text-left transition-colors hover:bg-accent ${
+                    isActive ? 'border-primary bg-primary/5' : ''
+                  }`}
                 >
                   <TokenPairIcons
                     tokenX={pair.tokenX}
@@ -257,7 +269,8 @@ export function WalletLoader({
                   </div>
                   <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
                 </button>
-              ))}
+                );
+              })}
             </div>
           )}
 
