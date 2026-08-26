@@ -214,14 +214,50 @@ function toSimulatedBin(options: {
   };
 }
 
-export async function fetchOnChainCombinedBins(options: {
+export interface OnChainPositionLiquidity {
+  combined: SimulatedBin[];
+  byPosition: Record<string, SimulatedBin[]>;
+}
+
+function amountsToBins(
+  merged: Map<number, { base: number; quote: number }>,
+  options: {
+    binStep: number;
+    baseDecimals: number;
+    quoteDecimals: number;
+    applyDecimalAdjustment: boolean;
+    activeBinId: number;
+  }
+): SimulatedBin[] {
+  const liquidIds = [...merged.keys()].sort((a, b) => a - b);
+  if (liquidIds.length === 0) return [];
+  const minId = liquidIds[0];
+  const maxId = liquidIds[liquidIds.length - 1];
+  const result: SimulatedBin[] = [];
+  for (let binId = minId; binId <= maxId; binId++) {
+    const amounts = merged.get(binId) ?? { base: 0, quote: 0 };
+    result.push(toSimulatedBin({
+      onChainBinId: binId,
+      baseAmount: amounts.base,
+      quoteAmount: amounts.quote,
+      binStep: options.binStep,
+      baseDecimals: options.baseDecimals,
+      quoteDecimals: options.quoteDecimals,
+      applyDecimalAdjustment: options.applyDecimalAdjustment,
+      activeBinId: options.activeBinId,
+    }));
+  }
+  return result;
+}
+
+export async function fetchOnChainPositionLiquidity(options: {
   positionAddresses: string[];
   binStep: number;
   baseDecimals: number;
   quoteDecimals: number;
   applyDecimalAdjustment: boolean;
   fallbackActiveBinId: number;
-}): Promise<SimulatedBin[]> {
+}): Promise<OnChainPositionLiquidity> {
   const {
     positionAddresses,
     binStep,
@@ -232,7 +268,7 @@ export async function fetchOnChainCombinedBins(options: {
   } = options;
 
   const uniqueAddresses = [...new Set(positionAddresses.filter(Boolean))];
-  if (uniqueAddresses.length === 0) return [];
+  if (uniqueAddresses.length === 0) return { combined: [], byPosition: {} };
 
   const positionAccounts = await getMultipleAccounts(uniqueAddresses);
   const positions: DecodedPosition[] = [];
@@ -241,7 +277,7 @@ export async function fetchOnChainCombinedBins(options: {
     if (!data || data.length < POSITION_BASE_SIZE) continue;
     positions.push(decodePosition(uniqueAddresses[i], data));
   }
-  if (positions.length === 0) return [];
+  if (positions.length === 0) return { combined: [], byPosition: {} };
 
   const needed = new Map<string, { pair: PublicKey; index: number }>();
   for (const position of positions) {
@@ -268,9 +304,18 @@ export async function fetchOnChainCombinedBins(options: {
     ? fallbackActiveBinId - 262144
     : fallbackActiveBinId;
 
-  const merged = new Map<number, { base: number; quote: number }>();
+  const combinedMap = new Map<number, { base: number; quote: number }>();
+  const byPosition: Record<string, SimulatedBin[]> = {};
+  const binOptions = {
+    binStep,
+    baseDecimals,
+    quoteDecimals,
+    applyDecimalAdjustment,
+    activeBinId: onChainActive,
+  };
 
   for (const position of positions) {
+    const posMap = new Map<number, { base: number; quote: number }>();
     for (let i = 0; i < position.upperBinId - position.lowerBinId + 1; i++) {
       const binId = position.lowerBinId + i;
       const share = position.shares[i] ?? BigInt(0);
@@ -282,32 +327,32 @@ export async function fetchOnChainCombinedBins(options: {
       const base = Number(amounts.x) / 10 ** baseDecimals;
       const quote = Number(amounts.y) / 10 ** quoteDecimals;
       if (base <= 0 && quote <= 0) continue;
-      const prev = merged.get(binId) ?? { base: 0, quote: 0 };
-      prev.base += base;
-      prev.quote += quote;
-      merged.set(binId, prev);
+      const local = posMap.get(binId) ?? { base: 0, quote: 0 };
+      local.base += base;
+      local.quote += quote;
+      posMap.set(binId, local);
+      const combined = combinedMap.get(binId) ?? { base: 0, quote: 0 };
+      combined.base += base;
+      combined.quote += quote;
+      combinedMap.set(binId, combined);
     }
+    byPosition[position.address] = amountsToBins(posMap, binOptions);
   }
 
-  const liquidIds = [...merged.keys()].sort((a, b) => a - b);
-  if (liquidIds.length === 0) return [];
-  const minId = liquidIds[0];
-  const maxId = liquidIds[liquidIds.length - 1];
+  return {
+    combined: trimEmptyEdgeBins(amountsToBins(combinedMap, binOptions)),
+    byPosition,
+  };
+}
 
-  const result: SimulatedBin[] = [];
-  for (let binId = minId; binId <= maxId; binId++) {
-    const amounts = merged.get(binId) ?? { base: 0, quote: 0 };
-    result.push(toSimulatedBin({
-      onChainBinId: binId,
-      baseAmount: amounts.base,
-      quoteAmount: amounts.quote,
-      binStep,
-      baseDecimals,
-      quoteDecimals,
-      applyDecimalAdjustment,
-      activeBinId: onChainActive,
-    }));
-  }
-
-  return trimEmptyEdgeBins(result);
+export async function fetchOnChainCombinedBins(options: {
+  positionAddresses: string[];
+  binStep: number;
+  baseDecimals: number;
+  quoteDecimals: number;
+  applyDecimalAdjustment: boolean;
+  fallbackActiveBinId: number;
+}): Promise<SimulatedBin[]> {
+  const result = await fetchOnChainPositionLiquidity(options);
+  return result.combined;
 }

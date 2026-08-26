@@ -7,10 +7,10 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import { getInitialBins, runSimulation, getIdFromPrice, getPriceFromId, type SimulationParams, type Analysis, type SimulatedBin, type Strategy } from "@/lib/dlmm";
+import { getInitialBins, runSimulation, getIdFromPrice, getPriceFromId, trimEmptyEdgeBins, type SimulationParams, type Analysis, type SimulatedBin, type Strategy } from "@/lib/dlmm";
 import { LiquidityChart } from "@/components/liquidity-chart";
 import { Logo } from "@/components/icons";
-import { Layers, CandlestickChart, Coins, ChevronsLeftRight, Footprints, RefreshCcw, MoveHorizontal, ExternalLink, Wallet, FlaskConical, Loader2 } from "lucide-react";
+import { Layers, CandlestickChart, Coins, ChevronsLeftRight, Footprints, RefreshCcw, MoveHorizontal, ExternalLink, Wallet, FlaskConical, Loader2, Plus, Minus } from "lucide-react";
 import { formatNumber } from "@/lib/utils";
 import { formatNumberForDisplay } from "@/lib/display-formatting";
 import { RadioGroup, RadioGroupItem } from "./ui/radio-group";
@@ -20,6 +20,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { Badge } from "./ui/badge";
 import { PoolSelector } from "@/components/pool-selector";
 import { WalletLoader } from "@/components/wallet-loader";
+import { PositionChanges, type ChangeFocus } from "@/components/position-changes";
 import { ShareButton } from '@/components/share-button';
 import { ThemeToggle } from "@/components/theme-toggle";
 import { MeteoraPair, parseTokenSymbols, formatUSD } from "@/lib/meteora-api";
@@ -32,6 +33,18 @@ import {
   type WalletPoolSummary,
   type WalletPositionDetail,
 } from "@/lib/wallet-positions";
+import {
+  analyzeCurrentBins,
+  binsToAmounts,
+  combineSliceBins,
+  originalSlices,
+  positionsFromSlices,
+  removeTransaction,
+  replayTransactions,
+  simulateSlices,
+  slicesCostBasis,
+  type SimulatedTransaction,
+} from "@/lib/position-transactions";
 
 type PartialSimulationParams = Omit<SimulationParams, 'strategy' | 'binStep' | 'initialPrice' | 'baseAmount' | 'quoteAmount' | 'lowerPrice' | 'upperPrice'> & {
   strategy: Strategy;
@@ -118,6 +131,11 @@ export function DlmmSimulator() {
   const [walletPair, setWalletPair] = useState<PairGroup | null>(null);
   const [isLoadingWalletPool, setIsLoadingWalletPool] = useState(false);
   const [walletPoolError, setWalletPoolError] = useState<string | null>(null);
+  const [originalWalletPositions, setOriginalWalletPositions] = useState<WalletPositionDetail[]>([]);
+  const [originalPositionBins, setOriginalPositionBins] = useState<Record<string, SimulatedBin[]>>({});
+  const [originalInitialPrice, setOriginalInitialPrice] = useState<number | null>(null);
+  const [simulatedTxs, setSimulatedTxs] = useState<SimulatedTransaction[]>([]);
+  const [changeFocus, setChangeFocus] = useState<ChangeFocus | null>(null);
   const searchParams = useSearchParams();
   const hasLoadedRef = useRef(false);
   const isEditingPercentageRef = useRef<{ lower: boolean; upper: boolean }>({ lower: false, upper: false });
@@ -153,7 +171,54 @@ export function DlmmSimulator() {
     return fixedString.replace(/\.?0+$/, '');
   }, []);
 
+  const walletReplay = useMemo(() => {
+    if (typeof params.binStep !== 'number' || originalWalletPositions.length === 0) return null;
+    return {
+      binStep: params.binStep,
+      baseDecimals,
+      quoteDecimals,
+      applyDecimalAdjustment,
+      activeBinId: typeof params.initialPrice === 'number'
+        ? getIdFromPrice(params.initialPrice, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment)
+        : 0,
+    };
+  }, [params.binStep, params.initialPrice, baseDecimals, quoteDecimals, applyDecimalAdjustment, originalWalletPositions.length]);
+
+  const walletSlices = useMemo(() => {
+    if (!walletReplay || originalWalletPositions.length === 0 || originalInitialPrice == null) return [];
+    return replayTransactions(
+      originalSlices(originalWalletPositions, originalPositionBins, originalInitialPrice),
+      simulatedTxs,
+      walletReplay
+    );
+  }, [walletReplay, originalWalletPositions, originalPositionBins, originalInitialPrice, simulatedTxs]);
+
   useEffect(() => {
+    if (walletSlices.length && walletReplay) {
+      const combined = combineSliceBins(walletSlices, walletReplay);
+      const amounts = binsToAmounts(combined, false);
+      setInitialBins(combined);
+      setParams(prev => {
+        const lowerPrice = combined[0]?.price ?? prev.lowerPrice;
+        const upperPrice = combined[combined.length - 1]?.price ?? prev.upperPrice;
+        if (
+          prev.baseAmount === amounts.base
+          && prev.quoteAmount === amounts.quote
+          && prev.lowerPrice === lowerPrice
+          && prev.upperPrice === upperPrice
+        ) {
+          return prev;
+        }
+        return {
+          ...prev,
+          baseAmount: amounts.base,
+          quoteAmount: amounts.quote,
+          lowerPrice,
+          upperPrice,
+        };
+      });
+      return;
+    }
     if (walletBins) {
       setInitialBins(walletBins);
       return;
@@ -167,16 +232,25 @@ export function DlmmSimulator() {
     } else {
       setInitialBins([]);
     }
-  }, [simulationParams, walletBins]);
+  }, [simulationParams, walletBins, walletSlices, walletReplay]);
 
   useEffect(() => {
+    if (walletSlices.length && typeof currentPrice === 'number') {
+      const simulatedBins = trimEmptyEdgeBins(simulateSlices(walletSlices, currentPrice));
+      setSimulation({
+        simulatedBins,
+        analysis: analyzeCurrentBins(simulatedBins),
+      });
+      setWalletPositions(positionsFromSlices(originalWalletPositions, walletSlices, currentPrice));
+      return;
+    }
     if (initialBins.length > 0 && typeof currentPrice === 'number' && simulationParams) {
       const result = runSimulation(initialBins, currentPrice, simulationParams.initialPrice);
       setSimulation(result);
-    } else {
+    } else if (!walletSlices.length) {
       setSimulation(null);
     }
-  }, [initialBins, currentPrice, simulationParams]);
+  }, [initialBins, currentPrice, simulationParams, walletSlices, originalWalletPositions]);
 
   useEffect(() => {
     if (params.initialPrice !== '' && currentPrice === '') {
@@ -912,6 +986,11 @@ export function DlmmSimulator() {
     setQuoteAmountInput('');
     setWalletBins(null);
     setWalletPositions([]);
+    setOriginalWalletPositions([]);
+    setOriginalPositionBins({});
+    setOriginalInitialPrice(null);
+    setSimulatedTxs([]);
+    setChangeFocus(null);
     setWalletPair(null);
     setWalletPoolError(null);
     setWalletAddress(null);
@@ -929,9 +1008,37 @@ export function DlmmSimulator() {
     setCurrentPrice(newCurrentPrice);
   }
 
+  const applySimulatedTx = (tx: SimulatedTransaction) => {
+    setSimulatedTxs(prev => {
+      const index = prev.findIndex(item => item.id === tx.id);
+      if (index === -1) return [...prev, tx];
+      const next = [...prev];
+      next[index] = tx;
+      return next;
+    });
+  };
+
+  const dropSimulatedTx = (id: string) => {
+    setSimulatedTxs(prev => removeTransaction(prev, id));
+  };
+
+  const restoreOriginalPositions = () => {
+    setSimulatedTxs([]);
+    setChangeFocus(null);
+    if (originalInitialPrice != null) {
+      setCurrentPrice(originalInitialPrice);
+      setParams(prev => ({ ...prev, initialPrice: originalInitialPrice }));
+    }
+  };
+
   const handlePoolSelect = (pool: MeteoraPair) => {
     setWalletBins(null);
     setWalletPositions([]);
+    setOriginalWalletPositions([]);
+    setOriginalPositionBins({});
+    setOriginalInitialPrice(null);
+    setSimulatedTxs([]);
+    setChangeFocus(null);
     setWalletPair(null);
     setWalletPoolError(null);
     setSelectedPool(pool);
@@ -1088,6 +1195,10 @@ export function DlmmSimulator() {
       setApplyDecimalAdjustment(decimalAdjustment);
       setDecimalsDetermined(true);
       setWalletPositions(loaded.positions);
+      setOriginalWalletPositions(loaded.positions);
+      setOriginalPositionBins(loaded.positionBins);
+      setOriginalInitialPrice(exactBinPrice);
+      setSimulatedTxs([]);
       setWalletBins(bins.length ? bins : loaded.bins);
       setParams({
         strategy: 'spot',
@@ -1102,6 +1213,10 @@ export function DlmmSimulator() {
     } catch (error) {
       setWalletBins(null);
       setWalletPositions([]);
+      setOriginalWalletPositions([]);
+      setOriginalPositionBins({});
+      setOriginalInitialPrice(null);
+      setSimulatedTxs([]);
       setWalletPoolError(error instanceof Error ? error.message : 'Failed to load pool positions');
     } finally {
       setIsLoadingWalletPool(false);
@@ -1111,11 +1226,10 @@ export function DlmmSimulator() {
   const analysis = simulation?.analysis;
 
   const initialTotalValue = useMemo(() => {
+    if (walletSlices.length) return slicesCostBasis(walletSlices);
     if (!initialBins || initialBins.length === 0) return 0;
-    // Use pre-calculated and normalized initialValueInQuote from bins
-    // This avoids recalculation errors and respects the normalization step
     return initialBins.reduce((sum, bin) => sum + bin.initialValueInQuote, 0);
-  }, [initialBins]);
+  }, [initialBins, walletSlices]);
   
   
   // Position Value Change
@@ -1171,8 +1285,8 @@ export function DlmmSimulator() {
   }
 
   const isPristine = typeof currentPrice === 'number' && typeof params.initialPrice === 'number' && Math.abs(currentPrice - params.initialPrice) < 1e-9;
-  const displayBase = isPristine && typeof params.baseAmount === 'number' ? params.baseAmount : analysis?.totalBase ?? 0;
-  const displayQuote = isPristine && typeof params.quoteAmount === 'number' ? params.quoteAmount : analysis?.totalQuote ?? 0;
+  const displayBase = isPristine && simulatedTxs.length === 0 && typeof params.baseAmount === 'number' ? params.baseAmount : analysis?.totalBase ?? 0;
+  const displayQuote = isPristine && simulatedTxs.length === 0 && typeof params.quoteAmount === 'number' ? params.quoteAmount : analysis?.totalQuote ?? 0;
 
   // Calculate average price paid based on conversions that occurred
   const averagePricePaid = useMemo(() => {
@@ -1329,9 +1443,10 @@ export function DlmmSimulator() {
             <CardContent className="grid gap-4">
               {walletBins && (
                 <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs text-muted-foreground">
-                  Combined {walletPositions.length} open {walletPositions.length === 1 ? 'position' : 'positions'}
-                  {walletPair ? ` in ${walletPair.pairKey}` : ''}. Drag the current price on the chart to simulate
-                  profit and loss. Liquidity is reconstructed from current balances across each position's bin range.
+                  Combined {originalWalletPositions.length} open {originalWalletPositions.length === 1 ? 'position' : 'positions'}
+                  {walletPair ? ` in ${walletPair.pairKey}` : ''}
+                  {simulatedTxs.length > 0 ? ` · ${simulatedTxs.length} simulated ${simulatedTxs.length === 1 ? 'change' : 'changes'}` : ''}.
+                  Drag the current price or apply changes below to simulate profit and loss.
                 </div>
               )}
               {!walletBins && (
@@ -1462,21 +1577,61 @@ export function DlmmSimulator() {
               </div>
               {walletPositions.length > 0 && (
                 <div className="space-y-2 pt-2 border-t border-border/50">
-                  <div className="text-sm font-medium">Open positions in this pool</div>
-                  <div className="max-h-56 space-y-2 overflow-y-auto">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-sm font-medium">Open positions in this pool</div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={() => setChangeFocus({ mode: 'add-position' })}
+                    >
+                      <Plus className="mr-1 h-3.5 w-3.5" />
+                      New
+                    </Button>
+                  </div>
+                  <div className="max-h-64 space-y-2 overflow-y-auto">
                     {walletPositions.map((position) => (
-                      <div key={position.positionAddress} className="rounded-md border bg-secondary/30 p-2 text-xs">
+                      <div
+                        key={position.positionAddress}
+                        className={`rounded-md border bg-secondary/30 p-2 text-xs ${position.isSimulated ? 'border-primary/40' : ''}`}
+                      >
                         <div className="flex items-center justify-between gap-2">
-                          <span className="font-mono">{shortenAddress(position.positionAddress, 4)}</span>
-                          {position.isOutOfRange ? (
-                            <Badge variant="destructive">OOR</Badge>
-                          ) : (
-                            <Badge variant="secondary">In range</Badge>
-                          )}
+                          <span className="font-mono">{position.isSimulated ? 'Simulated' : shortenAddress(position.positionAddress, 4)}</span>
+                          <div className="flex items-center gap-1">
+                            {position.isSimulated && <Badge variant="outline">Simulated</Badge>}
+                            {position.isOutOfRange ? (
+                              <Badge variant="destructive">OOR</Badge>
+                            ) : (
+                              <Badge variant="secondary">In range</Badge>
+                            )}
+                          </div>
                         </div>
                         <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
                           <span>{position.minPrice.toPrecision(5)} – {position.maxPrice.toPrecision(5)}</span>
                           <span>{formatUSD(position.valueUsd)}</span>
+                        </div>
+                        <div className="mt-2 flex gap-1">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2"
+                            onClick={() => setChangeFocus({ mode: 'add-liquidity', positionAddress: position.positionAddress })}
+                          >
+                            <Plus className="mr-1 h-3 w-3" />
+                            Add
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2"
+                            onClick={() => setChangeFocus({ mode: 'remove-liquidity', positionAddress: position.positionAddress })}
+                          >
+                            <Minus className="mr-1 h-3 w-3" />
+                            Remove
+                          </Button>
                         </div>
                       </div>
                     ))}
@@ -1565,6 +1720,32 @@ export function DlmmSimulator() {
             </CardContent>
           </Card>
 
+          {walletBins && typeof currentPrice === 'number' && (
+            <Card className="border-primary/20 bg-card/50 backdrop-blur-sm hover:border-primary/40 transition-all duration-300">
+              <CardHeader>
+                <CardTitle className="text-lg">Simulated transactions</CardTitle>
+                <CardDescription>
+                  Add or remove liquidity and open extra positions at the current simulated price.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <PositionChanges
+                  positions={walletPositions}
+                  transactions={simulatedTxs}
+                  currentPrice={currentPrice}
+                  tokenSymbols={tokenSymbols}
+                  defaultLowerPrice={typeof params.lowerPrice === 'number' ? params.lowerPrice : currentPrice * 0.95}
+                  defaultUpperPrice={typeof params.upperPrice === 'number' ? params.upperPrice : currentPrice * 1.05}
+                  focusRequest={changeFocus}
+                  onApply={applySimulatedTx}
+                  onRemoveTx={dropSimulatedTx}
+                  onRestore={restoreOriginalPositions}
+                  onFocusHandled={() => setChangeFocus(null)}
+                />
+              </CardContent>
+            </Card>
+          )}
+
           <Card className="border-primary/20 bg-card/50 backdrop-blur-sm hover:border-primary/40 transition-all duration-300">
             <CardHeader>
               <CardTitle className="text-lg">Position Analysis</CardTitle>
@@ -1637,17 +1818,22 @@ export function DlmmSimulator() {
                     <tbody>
                       {walletPositions.map((position) => (
                         <tr key={position.positionAddress} className="border-b border-border/40">
-                          <td className="py-2 pr-3 font-mono">{shortenAddress(position.positionAddress, 4)}</td>
+                          <td className="py-2 pr-3 font-mono">
+                            {position.isSimulated ? 'Simulated' : shortenAddress(position.positionAddress, 4)}
+                          </td>
                           <td className="py-2 pr-3">{position.minPrice.toPrecision(5)} – {position.maxPrice.toPrecision(5)}</td>
                           <td className="py-2 pr-3"><FormattedNumber value={position.baseAmount} maximumFractionDigits={4} /></td>
                           <td className="py-2 pr-3"><FormattedNumber value={position.quoteAmount} maximumFractionDigits={4} /></td>
                           <td className="py-2 pr-3">{formatUSD(position.valueUsd)}</td>
                           <td className="py-2">
-                            {position.isOutOfRange ? (
-                              <span className="text-red-400">Out of range</span>
-                            ) : (
-                              <span className="text-green-400">In range</span>
-                            )}
+                            <div className="flex flex-wrap items-center gap-1">
+                              {position.isSimulated && <Badge variant="outline">Simulated</Badge>}
+                              {position.isOutOfRange ? (
+                                <span className="text-red-400">Out of range</span>
+                              ) : (
+                                <span className="text-green-400">In range</span>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       ))}

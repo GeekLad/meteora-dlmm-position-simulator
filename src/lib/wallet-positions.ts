@@ -15,7 +15,7 @@ import {
 } from './dlmm';
 import { fetchPoolByAddress, type MeteoraPair } from './meteora-api';
 import { toSimulatorBinId } from './dlmm-sdk-wrapper';
-import { fetchOnChainCombinedBins } from './onchain-bins';
+import { fetchOnChainPositionLiquidity } from './onchain-bins';
 
 const METEORA_API_BASE = 'https://dlmm.datapi.meteora.ag';
 const REQUEST_GAP_MS = 40;
@@ -103,6 +103,7 @@ export interface WalletPositionDetail {
   pnlUsd: number;
   pnlPctChange: number;
   unclaimedFeesUsd: number;
+  isSimulated?: boolean;
 }
 
 export interface PairGroup {
@@ -134,6 +135,7 @@ export interface LoadedPoolSimulation {
   summary: WalletPoolSummary;
   positions: WalletPositionDetail[];
   bins: SimulatedBin[];
+  positionBins: Record<string, SimulatedBin[]>;
   combinedBaseAmount: number;
   combinedQuoteAmount: number;
   combinedLowerPrice: number;
@@ -420,28 +422,63 @@ export async function loadPoolSimulation(options: {
   const fallbackActive = activeBinId || 0;
 
   let bins: SimulatedBin[] = [];
+  let positionBins: Record<string, SimulatedBin[]> = {};
+  const binStep = pool.bin_step || summary.binStep;
+
   try {
-    bins = await fetchOnChainCombinedBins({
+    const onChain = await fetchOnChainPositionLiquidity({
       positionAddresses: positions.map(position => position.positionAddress),
-      binStep: pool.bin_step || summary.binStep,
+      binStep,
       baseDecimals,
       quoteDecimals,
       applyDecimalAdjustment,
       fallbackActiveBinId: fallbackActive,
     });
+    bins = onChain.combined;
+    positionBins = onChain.byPosition;
   } catch {
     bins = [];
+    positionBins = {};
   }
 
   if (bins.length === 0) {
     bins = reconstructCombinedBins({
       positions,
-      binStep: pool.bin_step || summary.binStep,
+      binStep,
       baseDecimals,
       quoteDecimals,
       applyDecimalAdjustment,
       fallbackActiveBinId: fallbackActive,
     });
+  }
+
+  if (Object.keys(positionBins).length === 0) {
+    for (const position of positions) {
+      const hasRange = Number.isFinite(position.lowerBinId)
+        && Number.isFinite(position.upperBinId)
+        && position.upperBinId >= position.lowerBinId;
+      const hasLiquidity = position.baseAmount > 0 || position.quoteAmount > 0;
+      positionBins[position.positionAddress] = hasRange && hasLiquidity
+        ? getInitialBinsForBinRange({
+            binStep,
+            minBinId: position.lowerBinId,
+            maxBinId: position.upperBinId,
+            activeBinId: position.poolActiveBinId || fallbackActive,
+            baseAmount: position.baseAmount,
+            quoteAmount: position.quoteAmount,
+            strategy: 'spot',
+            baseDecimals,
+            quoteDecimals,
+            applyDecimalAdjustment,
+          })
+        : [];
+    }
+  }
+
+  for (const position of positions) {
+    if (!(position.positionAddress in positionBins)) {
+      positionBins[position.positionAddress] = [];
+    }
   }
 
   const combinedBaseAmount = bins.length
@@ -464,6 +501,7 @@ export async function loadPoolSimulation(options: {
     summary,
     positions,
     bins,
+    positionBins,
     combinedBaseAmount,
     combinedQuoteAmount,
     combinedLowerPrice,
