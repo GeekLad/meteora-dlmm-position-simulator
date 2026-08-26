@@ -219,6 +219,27 @@ export function PositionChanges({
     setEditingId(tx.id);
   };
 
+  const findCreateTx = (address: string): SimulatedTransaction | undefined =>
+    transactions.find(tx => tx.type === 'add-position' && tx.positionAddress === address);
+
+  const editSimulatedPosition = (address: string) => {
+    const createTx = findCreateTx(address);
+    if (createTx) {
+      editTx(createTx);
+      return;
+    }
+    // Fallback: open create form prefilled from current position display
+    const position = positions.find(p => p.positionAddress === address);
+    if (!position) return;
+    setMode('add-position');
+    setPositionAddress(address);
+    setLowerPrice(String(position.minPrice));
+    setUpperPrice(String(position.maxPrice));
+    setBaseAmount(position.baseAmount > DUST ? String(position.baseAmount) : '');
+    setQuoteAmount(position.quoteAmount > DUST ? String(position.quoteAmount) : '');
+    setEditingId(null);
+  };
+
   const selectPosition = (address: string, nextMode?: SimulatedTxType) => {
     setPositionAddress(address);
     if (nextMode) setMode(nextMode);
@@ -305,7 +326,19 @@ export function PositionChanges({
                   symbols={tokenSymbols}
                 />
               </div>
-              <div className="mt-2 flex gap-1" onClick={event => event.stopPropagation()}>
+              <div className="mt-2 flex flex-wrap gap-1" onClick={event => event.stopPropagation()}>
+                {position.isSimulated && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2"
+                    onClick={() => editSimulatedPosition(position.positionAddress)}
+                  >
+                    <Pencil className="mr-1 h-3 w-3" />
+                    Edit
+                  </Button>
+                )}
                 <Button
                   type="button"
                   variant="ghost"
@@ -335,7 +368,7 @@ export function PositionChanges({
       <div className="space-y-4 border-t border-border/50 pt-3">
         <div className="text-sm font-medium">
           {mode === 'add-position'
-            ? 'New position'
+            ? (editingId ? 'Edit simulated position' : 'New position')
             : selected
               ? `${mode === 'remove-liquidity' ? 'Remove from' : 'Add to'} ${selected.isSimulated ? 'simulated position' : shortenAddress(selected.positionAddress, 4)}`
               : 'Select a position'}
