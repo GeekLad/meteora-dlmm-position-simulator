@@ -17,6 +17,8 @@ import { WalletLoader } from "@/components/wallet-loader";
 import { PositionChanges, type ChangeFocus } from "@/components/position-changes";
 import { ShareButton } from '@/components/share-button';
 import { ThemeToggle } from "@/components/theme-toggle";
+import { MobileSectionNav, type MobileSection } from "@/components/mobile-section-nav";
+import { cn } from "@/lib/utils";
 import { MeteoraPair, parseTokenSymbols, formatUSD } from "@/lib/meteora-api";
 import { reverseEngineerDecimals } from "@/lib/dlmm-sdk-wrapper";
 import {
@@ -124,6 +126,7 @@ export function DlmmSimulator() {
   const [originalInitialPrice, setOriginalInitialPrice] = useState<number | null>(null);
   const [simulatedTxs, setSimulatedTxs] = useState<SimulatedTransaction[]>([]);
   const [changeFocus, setChangeFocus] = useState<ChangeFocus | null>(null);
+  const [mobileSection, setMobileSection] = useState<MobileSection>('position');
   const searchParams = useSearchParams();
 
   const simulationParams = useMemo(() => {
@@ -289,6 +292,7 @@ export function DlmmSimulator() {
     setWalletAddress(null);
     setInitialWallet(null);
     setInitialPoolAddress(null);
+    setMobileSection('position');
     setClearKey(prev => prev + 1);
   };
   
@@ -335,6 +339,8 @@ export function DlmmSimulator() {
       next[index] = tx;
       return next;
     });
+    setMobileSection('liquidity');
+    window.scrollTo({ top: 0, behavior: 'auto' });
   };
 
   const dropSimulatedTx = (id: string) => {
@@ -388,6 +394,7 @@ export function DlmmSimulator() {
     setChangeFocus(null);
     setWalletPair(null);
     setWalletPoolError(null);
+    setMobileSection('position');
     setSelectedPool(pool);
 
     // Update token symbols
@@ -546,6 +553,7 @@ export function DlmmSimulator() {
       setOriginalInitialPrice(exactBinPrice);
       setSimulatedTxs([]);
       setWalletBins(bins.length ? bins : loaded.bins);
+      setMobileSection('liquidity');
       setParams({
         strategy: 'spot',
         binStep: pool.bin_step || payload.pool.binStep,
@@ -577,6 +585,18 @@ export function DlmmSimulator() {
     && currentPrice > 0;
 
   const stackedPositions = walletPositions;
+  const hasPosition = stackedPositions.length > 0 || simulatedTxs.length > 0;
+
+  useEffect(() => {
+    if (!hasPosition && mobileSection !== 'position') {
+      setMobileSection('position');
+    }
+  }, [hasPosition, mobileSection]);
+
+  const handleMobileSectionChange = (section: MobileSection) => {
+    setMobileSection(section);
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  };
 
   const analysis = simulation?.analysis;
 
@@ -694,23 +714,61 @@ export function DlmmSimulator() {
 
   return (
     <DlmmContext.Provider value={{params, baseDecimals, quoteDecimals, applyDecimalAdjustment, tokenSymbols}}>
-    <div className="flex flex-col gap-8">
-      <header className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-6 rounded-2xl bg-gradient-to-r from-primary/10 via-purple-500/10 to-primary/10 border border-primary/20 backdrop-blur-sm">
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded-xl bg-primary/20 backdrop-blur-sm">
-            <Logo className="h-8 w-8 text-primary" />
+    <div className={cn("flex flex-col", selectedPool ? "gap-2 pb-20 lg:gap-8 lg:pb-0" : "gap-4 lg:gap-8")}>
+      <header
+        className={cn(
+          "rounded-2xl bg-gradient-to-r from-primary/10 via-purple-500/10 to-primary/10 border border-primary/20 backdrop-blur-sm",
+          selectedPool
+            ? "flex items-center justify-between gap-2 p-2 sm:p-3 lg:p-6"
+            : "flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-4 sm:p-6"
+        )}
+      >
+        <div className="flex min-w-0 items-center gap-2 lg:gap-3">
+          <div className={cn("rounded-xl bg-primary/20 backdrop-blur-sm", selectedPool ? "p-1.5 lg:p-2" : "p-2")}>
+            <Logo className={cn("text-primary", selectedPool ? "h-6 w-6 lg:h-8 lg:w-8" : "h-8 w-8")} />
           </div>
-          <div>
-            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight bg-gradient-to-r from-primary via-purple-400 to-primary bg-clip-text text-transparent">Meteora DLMM Position Simulator v2</h1>
-            <p className="text-sm text-muted-foreground mt-1">Visualize and analyze your liquidity positions</p>
+          <div className="min-w-0">
+            <h1
+              className={cn(
+                "font-bold tracking-tight bg-gradient-to-r from-primary via-purple-400 to-primary bg-clip-text text-transparent",
+                selectedPool ? "hidden lg:block text-3xl" : "text-xl sm:text-3xl"
+              )}
+            >
+              Meteora DLMM Position Simulator v2
+            </h1>
+            {selectedPool ? (
+              <p className="truncate text-sm font-semibold lg:mt-1 lg:font-normal lg:text-muted-foreground">
+                {selectedPool.name}
+                {params.binStep ? ` · ${params.binStep} bin step` : ''}
+              </p>
+            ) : (
+              <p className="text-sm text-muted-foreground mt-1">Visualize and analyze your liquidity positions</p>
+            )}
           </div>
         </div>
-        <div className="flex gap-2">
-          <ShareButton currentPrice={currentPrice} initialPrice={params.initialPrice} selectedPool={selectedPool} wallet={walletAddress} disabled={!selectedPool && !walletAddress} />
-          <Button variant="outline" size="sm" onClick={handleClear} className="hover:bg-primary/10 transition-all duration-300">
-            <RefreshCcw className="mr-2 h-4 w-4" />Clear All
+        <div className="flex shrink-0 items-center gap-1.5 lg:gap-2">
+          <ShareButton
+            currentPrice={currentPrice}
+            initialPrice={params.initialPrice}
+            selectedPool={selectedPool}
+            wallet={walletAddress}
+            disabled={!selectedPool && !walletAddress}
+            compact={!!selectedPool}
+          />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleClear}
+            className={cn(
+              "hover:bg-primary/10 transition-all duration-300",
+              selectedPool && "h-8 w-8 px-0 lg:h-9 lg:w-auto lg:px-3"
+            )}
+            aria-label="Clear all"
+          >
+            <RefreshCcw className={cn("h-4 w-4", selectedPool ? "lg:mr-2" : "mr-2")} />
+            <span className={selectedPool ? "hidden lg:inline" : undefined}>Clear All</span>
           </Button>
-          <ThemeToggle />
+          <ThemeToggle className={selectedPool ? "h-8 w-8" : undefined} />
         </div>
       </header>
 
@@ -768,16 +826,16 @@ export function DlmmSimulator() {
 
       {selectedPool && (
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-1 flex flex-col gap-6">
+        <div className={cn("lg:col-span-1 flex flex-col gap-6", mobileSection !== 'position' && "hidden lg:flex")}>
           {typeof currentPrice === 'number' && canStackPositions && (
             <Card className="border-primary/20 bg-card/50 backdrop-blur-sm hover:border-primary/40 transition-all duration-300">
-              <CardHeader>
-                <CardTitle className="text-lg">Simulated transactions</CardTitle>
+              <CardHeader className="hidden lg:block">
+                <CardTitle className="text-lg">Position management</CardTitle>
                 <CardDescription>
                   Add or remove liquidity and open extra positions at the current simulated price.
                 </CardDescription>
               </CardHeader>
-              <CardContent>
+              <CardContent className="p-3 lg:p-6 lg:pt-0">
                 <PositionChanges
                   positions={stackedPositions}
                   transactions={simulatedTxs}
@@ -796,7 +854,7 @@ export function DlmmSimulator() {
                   onDeletePosition={deleteSimulatedPosition}
                   onRestore={restoreOriginalPositions}
                   onFocusHandled={() => setChangeFocus(null)}
-                  emptyHint="Create a position below to start the simulation."
+                  emptyHint="No positions yet. Create one to start the simulation."
                 />
               </CardContent>
             </Card>
@@ -804,14 +862,17 @@ export function DlmmSimulator() {
         </div>
 
         <div className="lg:col-span-2 flex flex-col gap-6">
-          <Card className="flex flex-col border-primary/20 bg-card/50 backdrop-blur-sm hover:border-primary/40 transition-all duration-300">
+          <Card className={cn("flex flex-col border-primary/20 bg-card/50 backdrop-blur-sm hover:border-primary/40 transition-all duration-300", mobileSection !== 'liquidity' && "hidden lg:flex")}>
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-lg">
                 <div className="p-2 rounded-lg bg-primary/10">
                   <CandlestickChart className="h-4 w-4 text-primary" />
                 </div>
                 <span>
-                  {selectedPool && params.binStep ? `Liquidity Distribution for ${selectedPool.name} ${params.binStep} Bin Step` : 'Liquidity Distribution'}
+                  <span className="lg:hidden">Liquidity Distribution</span>
+                  <span className="hidden lg:inline">
+                    {selectedPool && params.binStep ? `Liquidity Distribution for ${selectedPool.name} ${params.binStep} Bin Step` : 'Liquidity Distribution'}
+                  </span>
                   {stackedPositions.length > 1 ? ` · ${stackedPositions.length} positions combined` : ''}
                 </span>
                 {selectedPool && (
@@ -829,15 +890,15 @@ export function DlmmSimulator() {
             </CardHeader>
             <CardContent className="flex flex-col gap-4 pt-2">
               {canStackPositions && typeof params.initialPrice === 'number' && (
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-xs text-muted-foreground mr-1">Price shock</span>
+                <div className="flex items-center gap-2 overflow-x-auto pb-1 -mx-1 px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  <span className="shrink-0 text-xs text-muted-foreground mr-1">Price shock</span>
                   {[-25, -10, -5, -1, 0, 1, 5, 10, 25].map((pct) => (
                     <Button
                       key={pct}
                       type="button"
                       variant={pct === 0 ? 'secondary' : 'outline'}
                       size="sm"
-                      className="h-8 px-2.5 text-xs"
+                      className="h-8 shrink-0 px-2.5 text-xs"
                       onClick={() => {
                         if (pct === 0) {
                           handleCurrentPriceChange(params.initialPrice as number);
@@ -861,7 +922,7 @@ export function DlmmSimulator() {
                   ))}
                 </div>
               )}
-              <div className="h-80 w-full">
+              <div className="h-72 w-full lg:h-80">
                 {simulationParams && decimalsDetermined && typeof currentPrice === 'number' && typeof params.initialPrice === 'number' && typeof params.lowerPrice === 'number' && typeof params.upperPrice === 'number' ? (
                   <LiquidityChart
                     bins={initialBins}
@@ -885,7 +946,7 @@ export function DlmmSimulator() {
             </CardContent>
           </Card>
 
-          <Card className="border-primary/20 bg-card/50 backdrop-blur-sm hover:border-primary/40 transition-all duration-300">
+          <Card className={cn("border-primary/20 bg-card/50 backdrop-blur-sm hover:border-primary/40 transition-all duration-300", mobileSection !== 'analysis' && "hidden lg:block")}>
             <CardHeader>
               <CardTitle className="text-lg">Position Analysis</CardTitle>
             </CardHeader>
@@ -992,6 +1053,13 @@ export function DlmmSimulator() {
           </Card>
         </div>
       </div>
+      )}
+      {selectedPool && (
+        <MobileSectionNav
+          value={mobileSection}
+          onChange={handleMobileSectionChange}
+          hasPosition={hasPosition}
+        />
       )}
     </div>
     </DlmmContext.Provider>

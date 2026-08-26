@@ -146,7 +146,7 @@ export function RangeEditor({
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2 lg:space-y-3">
       <RangePreview
         minBinId={bounds?.min.id ?? 0}
         maxBinId={bounds?.max.id ?? 0}

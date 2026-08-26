@@ -1,4 +1,4 @@
-import type {Metadata} from 'next';
+import type {Metadata, Viewport} from 'next';
 import { Toaster } from "@/components/ui/toaster"
 import { ThemeProvider } from "@/lib/theme-provider"
 import './globals.css';
@@ -6,6 +6,12 @@ import './globals.css';
 export const metadata: Metadata = {
   title: 'Meteora DLMM Position Simulator v2',
   description: 'Simulate positions in a Meteora DLMM pool.',
+};
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
 };
 
 export default function RootLayout({

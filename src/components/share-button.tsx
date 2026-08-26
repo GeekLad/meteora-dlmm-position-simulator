@@ -13,9 +13,10 @@ interface ShareButtonProps {
   selectedPool: MeteoraPair | null;
   wallet?: string | null;
   disabled?: boolean;
+  compact?: boolean;
 }
 
-export function ShareButton({ currentPrice, initialPrice, selectedPool, wallet, disabled = false }: ShareButtonProps) {
+export function ShareButton({ currentPrice, initialPrice, selectedPool, wallet, disabled = false, compact = false }: ShareButtonProps) {
   const { toast } = useToast();
 
   const [baseUrl, setBaseUrl] = useState('');
@@ -65,9 +66,16 @@ export function ShareButton({ currentPrice, initialPrice, selectedPool, wallet, 
       <Tooltip delayDuration={0}>
         <TooltipTrigger asChild>
           <span className="inline-block">
-            <Button variant="outline" size="sm" onClick={handleShare} disabled={disabled}>
-              <Share2 className="mr-2 h-4 w-4" />
-              Share
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleShare}
+              disabled={disabled}
+              className={compact ? "h-8 w-8 px-0 lg:h-9 lg:w-auto lg:px-3" : undefined}
+              aria-label="Share"
+            >
+              <Share2 className={compact ? "h-4 w-4 lg:mr-2" : "mr-2 h-4 w-4"} />
+              <span className={compact ? "hidden lg:inline" : undefined}>Share</span>
             </Button>
           </span>
         </TooltipTrigger>
