@@ -1232,7 +1232,7 @@ export function DlmmSimulator() {
             <Logo className="h-8 w-8 text-primary" />
           </div>
           <div>
-            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight bg-gradient-to-r from-primary via-purple-400 to-primary bg-clip-text text-transparent">Meteora DLMM Position Simulator</h1>
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight bg-gradient-to-r from-primary via-purple-400 to-primary bg-clip-text text-transparent">Meteora DLMM Position Simulator v2</h1>
             <p className="text-sm text-muted-foreground mt-1">Visualize and analyze your liquidity positions</p>
           </div>
         </div>
