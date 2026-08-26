@@ -2,7 +2,7 @@
 "use client"
 
 import { useMemo, useRef, useState, useEffect, useCallback } from "react";
-import { type SimulatedBin, getIdFromPrice, getPriceFromId, type Strategy } from "@/lib/dlmm";
+import { type SimulatedBin, getIdFromPrice, getPriceFromId, binInitialDisplayValue, type Strategy } from "@/lib/dlmm";
 import { formatNumber } from "@/lib/utils";
 import { useDlmmContext } from "./dlmm-simulator";
 import { Switch } from "@/components/ui/switch";
@@ -103,13 +103,9 @@ export function LiquidityChart({
         return bin.currentAmount;
       }
     } else {
-      // Initial distribution - derive from pristine calculation data
-      // This matches Meteora UI behavior: show value at each bin's price
-      if (bin.initialTokenType === 'base') {
-        return bin.initialAmount * bin.price;
-      } else {
-        return bin.initialAmount;
-      }
+      // Overlay each deposit at the bin's own price so mixed SOL+USDC stacks
+      // don't treat USDC as extra SOL (which inflates a narrow overlap band).
+      return binInitialDisplayValue(bin);
     }
   }, [useCurrentPrice, currentPrice]);
   

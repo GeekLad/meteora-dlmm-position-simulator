@@ -22,7 +22,8 @@ export interface SimulatedBin {
   initialTokenType: 'base' | 'quote';
   initialAmount: number;
   initialValueInQuote: number;
-  // displayValue removed - chart derives display values at render time from calculation data
+  /** Quote-value at this bin's price. Safe to sum when overlapping deposits mix token types. */
+  initialDisplayValue: number;
   currentTokenType: 'base' | 'quote';
   currentAmount: number;
   currentValueInQuote: number;
@@ -81,6 +82,124 @@ export const getIdFromPrice = (
   return getBinIdFromPrice(price, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
 };
 
+/** Quote-only deposits sit at/below the active bin; base-only sit at/above. */
+export type DepositSide = 'both' | 'quote' | 'base';
+
+const DUST_AMOUNT = 1e-9;
+const DEFAULT_POSITION_BINS = 69;
+
+export function depositSide(baseAmount: number, quoteAmount: number): DepositSide {
+  const hasBase = baseAmount > DUST_AMOUNT;
+  const hasQuote = quoteAmount > DUST_AMOUNT;
+  if (hasQuote && !hasBase) return 'quote';
+  if (hasBase && !hasQuote) return 'base';
+  return 'both';
+}
+
+/**
+ * Place a new position around `currentPrice` with a fixed bin width.
+ *
+ * One-sided quote (USDC) uses bins at or below the active price so every bin
+ * can receive the deposit. One-sided base uses bins at or above. Two-sided
+ * deposits straddle the active bin the same way a fresh pool selection does.
+ */
+export function rangeForDeposit(options: {
+  currentPrice: number;
+  binStep: number;
+  widthBins: number;
+  side: DepositSide;
+  baseDecimals?: number;
+  quoteDecimals?: number;
+  applyDecimalAdjustment?: boolean;
+}): { minBinId: number; maxBinId: number; lowerPrice: number; upperPrice: number } {
+  const {
+    currentPrice,
+    binStep,
+    side,
+    baseDecimals = 9,
+    quoteDecimals = 6,
+    applyDecimalAdjustment = true,
+  } = options;
+  const width = Math.max(1, Math.round(options.widthBins) || DEFAULT_POSITION_BINS);
+  const activeId = getIdFromPrice(
+    currentPrice,
+    binStep,
+    baseDecimals,
+    quoteDecimals,
+    applyDecimalAdjustment
+  );
+
+  let minBinId: number;
+  let maxBinId: number;
+  if (side === 'quote') {
+    minBinId = activeId - width + 1;
+    maxBinId = activeId;
+  } else if (side === 'base') {
+    minBinId = activeId;
+    maxBinId = activeId + width - 1;
+  } else {
+    const below = Math.floor((width - 1) / 2);
+    const above = width - 1 - below;
+    minBinId = activeId - below;
+    maxBinId = activeId + above;
+  }
+
+  return {
+    minBinId,
+    maxBinId,
+    lowerPrice: getPriceFromId(minBinId, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment),
+    upperPrice: getPriceFromId(maxBinId, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment),
+  };
+}
+
+const EMPTY_BIN_EPSILON = 1e-12;
+
+/** Meteora-style bar height: quote amount, or base amount × this bin's price. */
+export function binInitialDisplayValue(bin: SimulatedBin): number {
+  if (typeof bin.initialDisplayValue === 'number' && Number.isFinite(bin.initialDisplayValue)) {
+    return bin.initialDisplayValue;
+  }
+  return bin.initialTokenType === 'base' ? bin.initialAmount * bin.price : bin.initialAmount;
+}
+
+function refreshInitialDisplayValue(bin: SimulatedBin): void {
+  bin.initialDisplayValue = bin.initialTokenType === 'base'
+    ? bin.initialAmount * bin.price
+    : bin.initialAmount;
+}
+
+/** Overlay two bins of the same id without mixing SOL tokens into USDC amounts. */
+export function accumulateSimulatedBin(existing: SimulatedBin, incoming: SimulatedBin): void {
+  existing.initialDisplayValue = binInitialDisplayValue(existing) + binInitialDisplayValue(incoming);
+  existing.initialValueInQuote += incoming.initialValueInQuote;
+  existing.currentValueInQuote += incoming.currentValueInQuote;
+
+  if (existing.initialTokenType === incoming.initialTokenType) {
+    existing.initialAmount += incoming.initialAmount;
+  } else if (existing.initialAmount <= EMPTY_BIN_EPSILON) {
+    existing.initialAmount = incoming.initialAmount;
+    existing.initialTokenType = incoming.initialTokenType;
+  } else if (incoming.initialAmount > EMPTY_BIN_EPSILON) {
+    existing.initialAmount = existing.initialDisplayValue;
+    existing.initialTokenType = 'quote';
+  }
+
+  if (existing.currentTokenType === incoming.currentTokenType) {
+    existing.currentAmount += incoming.currentAmount;
+  } else if (existing.currentAmount <= EMPTY_BIN_EPSILON) {
+    existing.currentAmount = incoming.currentAmount;
+    existing.currentTokenType = incoming.currentTokenType;
+  } else if (incoming.currentAmount > EMPTY_BIN_EPSILON) {
+    const existingAsQuote = existing.currentTokenType === 'base'
+      ? existing.currentAmount * existing.price
+      : existing.currentAmount;
+    const incomingAsQuote = incoming.currentTokenType === 'base'
+      ? incoming.currentAmount * incoming.price
+      : incoming.currentAmount;
+    existing.currentAmount = existingAsQuote + incomingAsQuote;
+    existing.currentTokenType = 'quote';
+  }
+}
 
 /** Derive the paired token amount so a position is balanced at `activePrice`. */
 export function pairAmountForStrategy(options: {
@@ -245,6 +364,7 @@ export function getInitialBins(params: SimulationParams): SimulatedBin[] {
       initialTokenType: tokenType,
       initialAmount: tokenAmount,
       initialValueInQuote: amount.valueInQuote,
+      initialDisplayValue: tokenType === 'base' ? tokenAmount * price : tokenAmount,
       currentTokenType: tokenType,
       currentAmount: tokenAmount,
       currentValueInQuote: amount.valueInQuote,
@@ -277,6 +397,7 @@ export function getInitialBins(params: SimulationParams): SimulatedBin[] {
     });
   }
 
+  bins.forEach(refreshInitialDisplayValue);
   return bins.sort((a, b) => a.price - b.price);
 }
 
@@ -352,6 +473,7 @@ export function getInitialBinsForBinRange(params: BinRangeParams): SimulatedBin[
       initialTokenType: tokenType,
       initialAmount: tokenAmount,
       initialValueInQuote: amount.valueInQuote,
+      initialDisplayValue: tokenType === 'base' ? tokenAmount * price : tokenAmount,
       currentTokenType: tokenType,
       currentAmount: tokenAmount,
       currentValueInQuote: amount.valueInQuote,
@@ -385,6 +507,7 @@ export function getInitialBinsForBinRange(params: BinRangeParams): SimulatedBin[
     });
   }
 
+  bins.forEach(refreshInitialDisplayValue);
   return bins.sort((a, b) => a.price - b.price);
 }
 
@@ -397,6 +520,9 @@ export interface MergeBinsOptions {
   activeBinId: number;
   fillGaps?: boolean;
   maxFilledBins?: number;
+  /** Force the filled span even when no liquidity sits on the edge bins. */
+  spanMinId?: number;
+  spanMaxId?: number;
 }
 
 /**
@@ -414,27 +540,20 @@ export function mergeSimulatedBins(
     for (const bin of bins) {
       const existing = merged.get(bin.id);
       if (!existing) {
-        merged.set(bin.id, { ...bin });
+        merged.set(bin.id, { ...bin, initialDisplayValue: binInitialDisplayValue(bin) });
         continue;
       }
-      existing.initialAmount += bin.initialAmount;
-      existing.initialValueInQuote += bin.initialValueInQuote;
-      existing.currentAmount += bin.currentAmount;
-      existing.currentValueInQuote += bin.currentValueInQuote;
-      if (bin.initialAmount > existing.initialAmount) {
-        existing.initialTokenType = bin.initialTokenType;
-      }
-      if (bin.currentAmount > existing.currentAmount) {
-        existing.currentTokenType = bin.currentTokenType;
-      }
+      accumulateSimulatedBin(existing, bin);
     }
   }
 
-  if (merged.size === 0) return [];
+  if (merged.size === 0 && (options.spanMinId == null || options.spanMaxId == null)) return [];
 
   const ids = Array.from(merged.keys()).sort((a, b) => a - b);
-  const minId = ids[0];
-  const maxId = ids[ids.length - 1];
+  let minId = ids.length ? ids[0] : options.spanMinId!;
+  let maxId = ids.length ? ids[ids.length - 1] : options.spanMaxId!;
+  if (typeof options.spanMinId === 'number') minId = Math.min(minId, options.spanMinId);
+  if (typeof options.spanMaxId === 'number') maxId = Math.max(maxId, options.spanMaxId);
   const span = maxId - minId + 1;
   const maxFilled = options.maxFilledBins ?? 500;
   const shouldFill = options.fillGaps !== false && span <= maxFilled;
@@ -467,6 +586,7 @@ export function mergeSimulatedBins(
       initialTokenType: isQuote ? 'quote' : 'base',
       initialAmount: 0,
       initialValueInQuote: 0,
+      initialDisplayValue: 0,
       currentTokenType: isQuote ? 'quote' : 'base',
       currentAmount: 0,
       currentValueInQuote: 0,
@@ -475,8 +595,6 @@ export function mergeSimulatedBins(
 
   return result;
 }
-
-const EMPTY_BIN_EPSILON = 1e-12;
 
 /**
  * Drop zero-liquidity bins on the low and high ends of a distribution.

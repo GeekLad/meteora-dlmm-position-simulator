@@ -20,7 +20,7 @@ import {
   type SimulatedTransaction,
   type SimulatedTxType,
 } from '@/lib/position-transactions';
-import { pairAmountForStrategy, type Strategy } from '@/lib/dlmm';
+import { depositSide, getIdFromPrice, pairAmountForStrategy, rangeForDeposit, type Strategy } from '@/lib/dlmm';
 
 export interface ChangeFocus {
   mode: SimulatedTxType;
@@ -125,6 +125,7 @@ export function PositionChanges({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [autoFill, setAutoFill] = useState(false);
   const lastAutoFilled = useRef<'base' | 'quote' | null>(null);
+  const rangeTouchedRef = useRef(false);
 
   const positionTitle = (position: WalletPositionDetail) => positionDisplayName(position, positions);
 
@@ -134,9 +135,51 @@ export function PositionChanges({
     return shortenAddress(address, 4);
   };
 
+  const templateWidthBins = useMemo(() => {
+    const template = positions[0];
+    if (template && template.upperBinId >= template.lowerBinId) {
+      return Math.max(1, template.upperBinId - template.lowerBinId + 1);
+    }
+    if (binStep > 0 && Number(defaultLowerPrice) > 0 && Number(defaultUpperPrice) > Number(defaultLowerPrice)) {
+      const minId = getIdFromPrice(
+        Number(defaultLowerPrice),
+        binStep,
+        baseDecimals,
+        quoteDecimals,
+        applyDecimalAdjustment
+      );
+      const maxId = getIdFromPrice(
+        Number(defaultUpperPrice),
+        binStep,
+        baseDecimals,
+        quoteDecimals,
+        applyDecimalAdjustment
+      );
+      if (maxId >= minId) return maxId - minId + 1;
+    }
+    return 69;
+  }, [positions, binStep, defaultLowerPrice, defaultUpperPrice, baseDecimals, quoteDecimals, applyDecimalAdjustment]);
+
   const seedCreateRange = () => {
+    if (currentPrice > 0 && binStep > 0) {
+      const side = depositSide(Number(baseAmount) || 0, Number(quoteAmount) || 0);
+      const range = rangeForDeposit({
+        currentPrice,
+        binStep,
+        widthBins: templateWidthBins,
+        side,
+        baseDecimals,
+        quoteDecimals,
+        applyDecimalAdjustment,
+      });
+      setLowerPrice(String(range.lowerPrice));
+      setUpperPrice(String(range.upperPrice));
+      rangeTouchedRef.current = false;
+      return;
+    }
     setLowerPrice(String(defaultLowerPrice || currentPrice * 0.95));
     setUpperPrice(String(defaultUpperPrice || currentPrice * 1.05));
+    rangeTouchedRef.current = false;
   };
 
   useEffect(() => {
@@ -151,6 +194,15 @@ export function PositionChanges({
     if (focusRequest.positionAddress) setPositionAddress(focusRequest.positionAddress);
     onFocusHandled();
   }, [focusRequest, onFocusHandled]);
+
+  useEffect(() => {
+    if (mode !== 'add-position' || editingId) return;
+    if (rangeTouchedRef.current) return;
+    if (!(currentPrice > 0) || !(binStep > 0)) return;
+    seedCreateRange();
+    // Re-place an unedited Create range when price moves or the deposit becomes one-sided.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPrice, mode, editingId, baseAmount, quoteAmount, templateWidthBins]);
 
   const selected = useMemo(
     () => positions.find(position => position.positionAddress === positionAddress),
@@ -480,11 +532,25 @@ export function PositionChanges({
           <div className="grid grid-cols-2 gap-2">
             <div className="grid gap-1.5">
               <Label htmlFor="chg-min-price" className="text-xs">Min price</Label>
-              <Input id="chg-min-price" value={lowerPrice} onChange={event => setLowerPrice(event.target.value)} />
+              <Input
+                id="chg-min-price"
+                value={lowerPrice}
+                onChange={event => {
+                  rangeTouchedRef.current = true;
+                  setLowerPrice(event.target.value);
+                }}
+              />
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="chg-max-price" className="text-xs">Max price</Label>
-              <Input id="chg-max-price" value={upperPrice} onChange={event => setUpperPrice(event.target.value)} />
+              <Input
+                id="chg-max-price"
+                value={upperPrice}
+                onChange={event => {
+                  rangeTouchedRef.current = true;
+                  setUpperPrice(event.target.value);
+                }}
+              />
             </div>
           </div>
         )}
@@ -574,7 +640,8 @@ export function PositionChanges({
                 : 'Add liquidity'}
         </Button>
         <p className="text-[11px] text-muted-foreground">
-          New liquidity is allocated using the simulated current price, which sets the bin shape and cost basis.
+          New liquidity uses the simulated current price for bin shape and cost basis.
+          One-sided quote is placed at or below that price; one-sided base at or above.
         </p>
       </div>
 

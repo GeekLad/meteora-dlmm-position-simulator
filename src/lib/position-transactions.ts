@@ -1,4 +1,6 @@
 import {
+  accumulateSimulatedBin,
+  binInitialDisplayValue,
   getIdFromPrice,
   getInitialBinsForBinRange,
   getPriceFromId,
@@ -57,6 +59,7 @@ export function scaleBins(bins: SimulatedBin[], scale: number): SimulatedBin[] {
     ...bin,
     initialAmount: bin.initialAmount * scale,
     initialValueInQuote: bin.initialValueInQuote * scale,
+    initialDisplayValue: binInitialDisplayValue(bin) * scale,
     currentAmount: bin.currentAmount * scale,
     currentValueInQuote: bin.currentValueInQuote * scale,
   }));
@@ -234,9 +237,56 @@ export function replayTransactions(
   return slices;
 }
 
+function displayBinSpan(slices: LiquiditySlice[]): { minId: number; maxId: number } | null {
+  const active = slices.filter(slice => slice.scale > 0);
+  if (active.length === 0) return null;
+
+  let minId = Infinity;
+  let maxId = -Infinity;
+  for (const slice of active) {
+    if (slice.isSimulatedPosition) {
+      minId = Math.min(minId, slice.lowerBinId);
+      maxId = Math.max(maxId, slice.upperBinId);
+      continue;
+    }
+    const liquid = slice.bins.filter(bin =>
+      bin.initialAmount > 1e-12 || bin.currentAmount > 1e-12
+    );
+    if (liquid.length > 0) {
+      minId = Math.min(minId, liquid[0].id, liquid[liquid.length - 1].id);
+      maxId = Math.max(maxId, liquid[0].id, liquid[liquid.length - 1].id);
+    } else {
+      minId = Math.min(minId, slice.lowerBinId);
+      maxId = Math.max(maxId, slice.upperBinId);
+    }
+  }
+  if (!Number.isFinite(minId) || !Number.isFinite(maxId) || maxId < minId) return null;
+  return { minId, maxId };
+}
+
+function alignBinsToSpan(
+  bins: SimulatedBin[],
+  slices: LiquiditySlice[],
+  replay: ReplayOptions
+): SimulatedBin[] {
+  const span = displayBinSpan(slices);
+  if (!span) return trimEmptyEdgeBins(bins);
+  return mergeSimulatedBins([bins], {
+    binStep: replay.binStep,
+    baseDecimals: replay.baseDecimals,
+    quoteDecimals: replay.quoteDecimals,
+    applyDecimalAdjustment: replay.applyDecimalAdjustment,
+    activeBinId: replay.activeBinId,
+    fillGaps: true,
+    spanMinId: span.minId,
+    spanMaxId: span.maxId,
+  });
+}
+
 export function simulateSlices(
   slices: LiquiditySlice[],
-  currentPrice: number
+  currentPrice: number,
+  replay?: ReplayOptions | null
 ): SimulatedBin[] {
   const converted = slices
     .filter(slice => slice.scale > 0)
@@ -247,22 +297,28 @@ export function simulateSlices(
     .filter(bins => bins.length > 0);
 
   if (converted.length === 0) return [];
-  return converted.reduce((merged, bins) => {
+  const merged = converted.reduce((acc, bins) => {
     const byId = new Map<number, SimulatedBin>();
-    for (const bin of [...merged, ...bins]) {
+    for (const bin of [...acc, ...bins]) {
       const existing = byId.get(bin.id);
       if (!existing) {
-        byId.set(bin.id, { ...bin });
+        byId.set(bin.id, { ...bin, initialDisplayValue: binInitialDisplayValue(bin) });
         continue;
       }
-      existing.currentAmount += bin.currentAmount;
-      existing.currentValueInQuote += bin.currentValueInQuote;
-      existing.initialAmount += bin.initialAmount;
-      existing.initialValueInQuote += bin.initialValueInQuote;
-      if (bin.currentAmount > 0) existing.currentTokenType = bin.currentTokenType;
+      accumulateSimulatedBin(existing, bin);
     }
     return [...byId.values()].sort((a, b) => a.price - b.price);
   });
+
+  if (!replay) return trimEmptyEdgeBins(merged);
+  const currentActiveId = getIdFromPrice(
+    currentPrice,
+    replay.binStep,
+    replay.baseDecimals,
+    replay.quoteDecimals,
+    replay.applyDecimalAdjustment
+  );
+  return alignBinsToSpan(merged, slices, { ...replay, activeBinId: currentActiveId });
 }
 
 export function combineSliceBins(
@@ -274,14 +330,15 @@ export function combineSliceBins(
     .map(slice => scaleBins(slice.bins, slice.scale))
     .filter(bins => bins.length > 0);
   if (sets.length === 0) return [];
-  return trimEmptyEdgeBins(mergeSimulatedBins(sets, {
+  const merged = mergeSimulatedBins(sets, {
     binStep: replay.binStep,
     baseDecimals: replay.baseDecimals,
     quoteDecimals: replay.quoteDecimals,
     applyDecimalAdjustment: replay.applyDecimalAdjustment,
     activeBinId: replay.activeBinId,
     fillGaps: true,
-  }));
+  });
+  return alignBinsToSpan(merged, slices, replay);
 }
 
 export function slicesCostBasis(slices: LiquiditySlice[]): number {

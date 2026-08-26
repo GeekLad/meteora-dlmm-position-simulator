@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import { getInitialBins, runSimulation, getIdFromPrice, getPriceFromId, trimEmptyEdgeBins, type SimulationParams, type Analysis, type SimulatedBin, type Strategy } from "@/lib/dlmm";
+import { getInitialBins, runSimulation, getIdFromPrice, getPriceFromId, type SimulationParams, type Analysis, type SimulatedBin, type Strategy } from "@/lib/dlmm";
 import { LiquidityChart } from "@/components/liquidity-chart";
 import { Logo } from "@/components/icons";
 import { Layers, CandlestickChart, Coins, ChevronsLeftRight, Footprints, RefreshCcw, MoveHorizontal, ExternalLink, Wallet, FlaskConical, Loader2 } from "lucide-react";
@@ -239,7 +239,7 @@ export function DlmmSimulator() {
 
   useEffect(() => {
     if (walletSlices.length && typeof currentPrice === 'number') {
-      const simulatedBins = trimEmptyEdgeBins(simulateSlices(walletSlices, currentPrice));
+      const simulatedBins = simulateSlices(walletSlices, currentPrice, walletReplay);
       setSimulation({
         simulatedBins,
         analysis: analyzeCurrentBins(simulatedBins),
@@ -254,7 +254,7 @@ export function DlmmSimulator() {
     } else if (!walletSlices.length) {
       setSimulation(null);
     }
-  }, [initialBins, currentPrice, simulationParams, walletSlices, originalWalletPositions, walletBins]);
+  }, [initialBins, currentPrice, simulationParams, walletSlices, walletReplay, originalWalletPositions, walletBins]);
 
   useEffect(() => {
     if (walletBins) return;

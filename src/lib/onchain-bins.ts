@@ -208,6 +208,7 @@ function toSimulatedBin(options: {
     initialTokenType: tokenType,
     initialAmount: amount,
     initialValueInQuote: quoteValue,
+    initialDisplayValue: options.quoteAmount + options.baseAmount * price,
     currentTokenType: tokenType,
     currentAmount: amount,
     currentValueInQuote: quoteValue,
