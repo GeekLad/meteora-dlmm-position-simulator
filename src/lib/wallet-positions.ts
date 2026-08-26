@@ -9,6 +9,7 @@
 import {
   getInitialBinsForBinRange,
   mergeSimulatedBins,
+  trimEmptyEdgeBins,
   type SimulatedBin,
   type Strategy,
 } from './dlmm';
@@ -385,14 +386,14 @@ export function reconstructCombinedBins(options: {
 
   const activeBinId = positions.find(p => p.poolActiveBinId)?.poolActiveBinId ?? fallbackActiveBinId;
 
-  return mergeSimulatedBins(perPosition, {
+  return trimEmptyEdgeBins(mergeSimulatedBins(perPosition, {
     binStep,
     baseDecimals,
     quoteDecimals,
     applyDecimalAdjustment,
     activeBinId,
     fillGaps: true,
-  });
+  }));
 }
 
 export async function loadPoolSimulation(options: {

@@ -378,6 +378,25 @@ export function mergeSimulatedBins(
   return result;
 }
 
+const EMPTY_BIN_EPSILON = 1e-12;
+
+/**
+ * Drop zero-liquidity bins on the low and high ends of a distribution.
+ * Interior gaps are kept so overlapping/disjoint ranges still show as a continuous axis.
+ */
+export function trimEmptyEdgeBins(bins: SimulatedBin[]): SimulatedBin[] {
+  if (bins.length === 0) return bins;
+  const hasLiquidity = (bin: SimulatedBin) =>
+    bin.initialAmount > EMPTY_BIN_EPSILON || bin.initialValueInQuote > EMPTY_BIN_EPSILON;
+
+  let start = 0;
+  let end = bins.length - 1;
+  while (start <= end && !hasLiquidity(bins[start])) start += 1;
+  while (end >= start && !hasLiquidity(bins[end])) end -= 1;
+  if (start === 0 && end === bins.length - 1) return bins;
+  return bins.slice(start, end + 1);
+}
+
 
 
 /**

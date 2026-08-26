@@ -4,7 +4,7 @@
  */
 
 import { PublicKey } from '@solana/web3.js';
-import { getPriceFromId, type SimulatedBin } from './dlmm';
+import { getPriceFromId, trimEmptyEdgeBins, type SimulatedBin } from './dlmm';
 import { toSimulatorBinId } from './dlmm-sdk-wrapper';
 
 const DLMM_PROGRAM_ID = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
@@ -269,12 +269,8 @@ export async function fetchOnChainCombinedBins(options: {
     : fallbackActiveBinId;
 
   const merged = new Map<number, { base: number; quote: number }>();
-  let minId = Infinity;
-  let maxId = -Infinity;
 
   for (const position of positions) {
-    minId = Math.min(minId, position.lowerBinId);
-    maxId = Math.max(maxId, position.upperBinId);
     for (let i = 0; i < position.upperBinId - position.lowerBinId + 1; i++) {
       const binId = position.lowerBinId + i;
       const share = position.shares[i] ?? BigInt(0);
@@ -283,14 +279,20 @@ export async function fetchOnChainCombinedBins(options: {
       const offset = binId - arrayIndexToFirstBinId(arrIdx);
       const bin = bins?.[offset];
       const amounts = bin ? shareToAmounts(share, bin) : { x: BigInt(0), y: BigInt(0) };
+      const base = Number(amounts.x) / 10 ** baseDecimals;
+      const quote = Number(amounts.y) / 10 ** quoteDecimals;
+      if (base <= 0 && quote <= 0) continue;
       const prev = merged.get(binId) ?? { base: 0, quote: 0 };
-      prev.base += Number(amounts.x) / 10 ** baseDecimals;
-      prev.quote += Number(amounts.y) / 10 ** quoteDecimals;
+      prev.base += base;
+      prev.quote += quote;
       merged.set(binId, prev);
     }
   }
 
-  if (!Number.isFinite(minId) || maxId < minId) return [];
+  const liquidIds = [...merged.keys()].sort((a, b) => a - b);
+  if (liquidIds.length === 0) return [];
+  const minId = liquidIds[0];
+  const maxId = liquidIds[liquidIds.length - 1];
 
   const result: SimulatedBin[] = [];
   for (let binId = minId; binId <= maxId; binId++) {
@@ -307,5 +309,5 @@ export async function fetchOnChainCombinedBins(options: {
     }));
   }
 
-  return result;
+  return trimEmptyEdgeBins(result);
 }
