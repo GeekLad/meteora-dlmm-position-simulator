@@ -419,6 +419,14 @@ export function removeTransaction(
   return remaining;
 }
 
+/** Remove every transaction touching a simulated position, so it disappears from the replay. */
+export function removeSimulatedPosition(
+  transactions: SimulatedTransaction[],
+  positionAddress: string
+): SimulatedTransaction[] {
+  return transactions.filter(tx => tx.positionAddress !== positionAddress);
+}
+
 export function newTxId(): string {
   return `tx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }

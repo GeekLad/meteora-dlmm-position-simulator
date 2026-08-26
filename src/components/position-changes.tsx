@@ -20,6 +20,7 @@ import {
   type SimulatedTransaction,
   type SimulatedTxType,
 } from '@/lib/position-transactions';
+import { RangeEditor } from '@/components/range-editor';
 import { depositSide, getIdFromPrice, pairAmountForStrategy, rangeForDeposit, type Strategy } from '@/lib/dlmm';
 
 export interface ChangeFocus {
@@ -42,6 +43,7 @@ interface PositionChangesProps {
   focusRequest: ChangeFocus | null;
   onApply: (tx: SimulatedTransaction) => void;
   onRemoveTx: (id: string) => void;
+  onDeletePosition: (positionAddress: string) => void;
   onRestore: () => void;
   onFocusHandled: () => void;
   emptyHint?: string;
@@ -107,6 +109,7 @@ export function PositionChanges({
   focusRequest,
   onApply,
   onRemoveTx,
+  onDeletePosition,
   onRestore,
   onFocusHandled,
   emptyHint,
@@ -188,6 +191,14 @@ export function PositionChanges({
     }
   }, [positionAddress, positions]);
 
+  // Exit edit mode when the transaction being edited is removed.
+  useEffect(() => {
+    if (editingId && !transactions.some(tx => tx.id === editingId)) {
+      setEditingId(null);
+      if (mode === 'add-position') setMode('add-liquidity');
+    }
+  }, [editingId, transactions, mode]);
+
   useEffect(() => {
     if (!focusRequest) return;
     setMode(focusRequest.mode);
@@ -213,7 +224,7 @@ export function PositionChanges({
     if (mode === 'add-position') {
       const minP = Number(lowerPrice);
       const maxP = Number(upperPrice);
-      if (minP > 0 && maxP > minP) return { lower: minP, upper: maxP };
+      if (minP > 0 && maxP >= minP) return { lower: minP, upper: maxP };
       return null;
     }
     if (selected) return { lower: selected.minPrice, upper: selected.maxPrice };
@@ -308,7 +319,7 @@ export function PositionChanges({
     if (mode === 'add-position') {
       const minP = Number(lowerPrice);
       const maxP = Number(upperPrice);
-      if (!(minP > 0) || !(maxP > minP)) return;
+      if (!(minP > 0) || !(maxP > 0) || maxP < minP) return;
       onApply({
         id: editingId ?? newTxId(),
         type: 'add-position',
@@ -468,18 +479,6 @@ export function PositionChanges({
                 />
               </div>
               <div className="mt-2 flex flex-wrap gap-1" onClick={event => event.stopPropagation()}>
-                {position.isSimulated && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2"
-                    onClick={() => editSimulatedPosition(position.positionAddress)}
-                  >
-                    <Pencil className="mr-1 h-3 w-3" />
-                    Edit
-                  </Button>
-                )}
                 <Button
                   type="button"
                   variant="ghost"
@@ -500,6 +499,30 @@ export function PositionChanges({
                   <Minus className="mr-1 h-3 w-3" />
                   Remove
                 </Button>
+                {position.isSimulated && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2"
+                    onClick={() => editSimulatedPosition(position.positionAddress)}
+                  >
+                    <Pencil className="mr-1 h-3 w-3" />
+                    Edit
+                  </Button>
+                )}
+                {position.isSimulated && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-destructive hover:text-destructive"
+                    onClick={() => onDeletePosition(position.positionAddress)}
+                  >
+                    <Trash2 className="mr-1 h-3 w-3" />
+                    Delete
+                  </Button>
+                )}
               </div>
             </div>
           );
@@ -529,30 +552,23 @@ export function PositionChanges({
         </Tabs>
 
         {mode === 'add-position' && (
-          <div className="grid grid-cols-2 gap-2">
-            <div className="grid gap-1.5">
-              <Label htmlFor="chg-min-price" className="text-xs">Min price</Label>
-              <Input
-                id="chg-min-price"
-                value={lowerPrice}
-                onChange={event => {
-                  rangeTouchedRef.current = true;
-                  setLowerPrice(event.target.value);
-                }}
-              />
-            </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="chg-max-price" className="text-xs">Max price</Label>
-              <Input
-                id="chg-max-price"
-                value={upperPrice}
-                onChange={event => {
-                  rangeTouchedRef.current = true;
-                  setUpperPrice(event.target.value);
-                }}
-              />
-            </div>
-          </div>
+          <RangeEditor
+            minPrice={Number(lowerPrice)}
+            maxPrice={Number(upperPrice)}
+            currentPrice={currentPrice}
+            strategy={strategy}
+            baseAmount={Number(baseAmount) || 0}
+            quoteAmount={Number(quoteAmount) || 0}
+            binStep={binStep}
+            baseDecimals={baseDecimals}
+            quoteDecimals={quoteDecimals}
+            applyDecimalAdjustment={applyDecimalAdjustment}
+            onChange={(nextMin, nextMax) => {
+              rangeTouchedRef.current = true;
+              setLowerPrice(String(nextMin));
+              setUpperPrice(String(nextMax));
+            }}
+          />
         )}
 
         {mode !== 'remove-liquidity' && (
@@ -639,10 +655,12 @@ export function PositionChanges({
                 ? 'Create position'
                 : 'Add liquidity'}
         </Button>
-        <p className="text-[11px] text-muted-foreground">
-          New liquidity uses the simulated current price for bin shape and cost basis.
-          One-sided quote is placed at or below that price; one-sided base at or above.
-        </p>
+        {mode === 'add-position' && (
+          <p className="text-[11px] text-muted-foreground">
+            New liquidity uses the simulated current price for bin shape and cost basis.
+            One-sided quote is placed at or below that price; one-sided base at or above.
+          </p>
+        )}
       </div>
 
       <div className="space-y-2 border-t border-border/50 pt-3">

@@ -35,6 +35,7 @@ import {
   originalSlices,
   positionsFromSlices,
   removeTransaction,
+  removeSimulatedPosition,
   replayTransactions,
   simulateSlices,
   simulatedPositionDetail,
@@ -338,6 +339,11 @@ export function DlmmSimulator() {
 
   const dropSimulatedTx = (id: string) => {
     setSimulatedTxs(prev => removeTransaction(prev, id));
+  };
+
+  const deleteSimulatedPosition = (positionAddress: string) => {
+    setSimulatedTxs(prev => removeSimulatedPosition(prev, positionAddress));
+    setChangeFocus(prev => (prev?.positionAddress === positionAddress ? null : prev));
   };
 
   const restoreOriginalPositions = () => {
@@ -787,6 +793,7 @@ export function DlmmSimulator() {
                   focusRequest={changeFocus}
                   onApply={applySimulatedTx}
                   onRemoveTx={dropSimulatedTx}
+                  onDeletePosition={deleteSimulatedPosition}
                   onRestore={restoreOriginalPositions}
                   onFocusHandled={() => setChangeFocus(null)}
                   emptyHint="Create a position below to start the simulation."

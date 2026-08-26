@@ -161,7 +161,7 @@ export function WalletLoader({
   return (
     <div className="space-y-4">
       <form
-        className="flex flex-col gap-2 sm:flex-row"
+        className="flex w-full max-w-2xl flex-col gap-2 sm:flex-row"
         onSubmit={(event) => {
           event.preventDefault();
           void handleLoad();

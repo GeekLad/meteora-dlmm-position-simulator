@@ -268,21 +268,8 @@ export function filterPairs(pairs: MeteoraPair[], searchTerm: string): MeteoraPa
   }
 
   const term = searchTerm.toLowerCase().trim();
-
-  // Check if search term looks like a pair name (contains delimiter)
-  const pairDelimiters = ['-', '/'];
-  let isPairSearch = false;
-  let searchTokens: string[] = [];
-
-  for (const delimiter of pairDelimiters) {
-    if (term.includes(delimiter)) {
-      searchTokens = term.split(delimiter).map(t => t.trim()).filter(t => t.length > 0);
-      if (searchTokens.length === 2) {
-        isPairSearch = true;
-        break;
-      }
-    }
-  }
+  const searchTokens = term.split(/[\s/\-]+/).filter(token => token.length > 0);
+  const isPairSearch = searchTokens.length === 2;
 
   return pairs.filter(pair => {
     // If it's a pair search (e.g., "SOL-USDC"), only match exact token combinations
