@@ -356,7 +356,11 @@ export function reconstructCombinedBins(options: {
   } = options;
 
   const perPosition = positions
-    .filter(position => position.upperBinId >= position.lowerBinId && (position.baseAmount > 0 || position.quoteAmount > 0))
+    .filter(position => {
+      const hasRange = position.upperBinId >= position.lowerBinId && (position.lowerBinId !== 0 || position.upperBinId !== 0);
+      const hasLiquidity = position.baseAmount > 0 || position.quoteAmount > 0;
+      return hasRange && hasLiquidity;
+    })
     .map(position =>
       getInitialBinsForBinRange({
         binStep,

@@ -1058,16 +1058,18 @@ export function DlmmSimulator() {
         ).applyDecimalAdjustment;
       }
 
-      const bins = loaded.positions.length
-        ? reconstructCombinedBins({
-            positions: loaded.positions,
-            binStep: pool.bin_step || payload.pool.binStep,
-            baseDecimals: poolBaseDecimals,
-            quoteDecimals: poolQuoteDecimals,
-            applyDecimalAdjustment: decimalAdjustment,
-            fallbackActiveBinId: loaded.activeBinId,
-          })
-        : loaded.bins;
+      if (!loaded.positions.length) {
+        throw new Error('No open positions found in this pool.');
+      }
+
+      const bins = reconstructCombinedBins({
+        positions: loaded.positions,
+        binStep: pool.bin_step || payload.pool.binStep,
+        baseDecimals: poolBaseDecimals,
+        quoteDecimals: poolQuoteDecimals,
+        applyDecimalAdjustment: decimalAdjustment,
+        fallbackActiveBinId: loaded.activeBinId,
+      });
 
       const activeBinId = loaded.activeBinId;
       const exactBinPrice = activeBinId
