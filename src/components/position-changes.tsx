@@ -451,12 +451,14 @@ export function PositionChanges({
     window.scrollTo({ top: 0, behavior: 'auto' });
   };
 
+  const hasTokenAmount = (Number(baseAmount) || 0) > 0 || (Number(quoteAmount) || 0) > 0;
+
   const formTitle = activeForm === 'add-position'
     ? (editingId ? 'Edit simulated position' : 'New position')
     : activeForm === 'remove-liquidity'
-      ? `Remove from ${selected ? positionTitle(selected) : 'position'}`
+      ? 'Remove Liquidity'
       : activeForm === 'add-liquidity'
-        ? `Add to ${selected ? positionTitle(selected) : 'position'}`
+        ? 'Add Liquidity'
         : 'Positions';
 
   const submitLabel = editingId
@@ -576,7 +578,18 @@ export function PositionChanges({
             </div>
           )}
 
-          <Button type="button" onClick={apply} className="w-full" disabled={activeForm !== 'add-position' && !selected}>
+          <Button
+            type="button"
+            onClick={apply}
+            className="w-full"
+            disabled={
+              activeForm === 'remove-liquidity'
+                ? !selected
+                : activeForm === 'add-liquidity'
+                  ? !selected || !hasTokenAmount
+                  : !hasTokenAmount
+            }
+          >
             {submitLabel}
           </Button>
           {activeForm === 'add-position' && (

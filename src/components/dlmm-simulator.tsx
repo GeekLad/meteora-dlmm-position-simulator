@@ -1,17 +1,16 @@
 
 "use client";
 
-import { useState, useMemo, useEffect, createContext, useContext } from "react";
+import { useState, useMemo, useEffect, createContext, useContext, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { getInitialBins, runSimulation, getIdFromPrice, getPriceFromId, type SimulationParams, type Analysis, type SimulatedBin, type Strategy } from "@/lib/dlmm";
 import { LiquidityChart } from "@/components/liquidity-chart";
 import { Logo } from "@/components/icons";
-import { CandlestickChart, RefreshCcw, ExternalLink, Wallet, FlaskConical, Loader2 } from "lucide-react";
+import { BarChart3, RefreshCcw, ExternalLink, Wallet, FlaskConical, Loader2 } from "lucide-react";
 import { formatNumberForDisplay } from "@/lib/display-formatting";
 import { Button } from "./ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
-import { Badge } from "./ui/badge";
 import { PoolSelector } from "@/components/pool-selector";
 import { WalletLoader } from "@/components/wallet-loader";
 import { PositionChanges, type ChangeFocus } from "@/components/position-changes";
@@ -19,12 +18,11 @@ import { ShareButton } from '@/components/share-button';
 import { ThemeToggle } from "@/components/theme-toggle";
 import { MobileSectionNav, type MobileSection } from "@/components/mobile-section-nav";
 import { cn } from "@/lib/utils";
-import { MeteoraPair, parseTokenSymbols, formatUSD } from "@/lib/meteora-api";
+import { MeteoraPair, parseTokenSymbols } from "@/lib/meteora-api";
 import { reverseEngineerDecimals } from "@/lib/dlmm-sdk-wrapper";
 import {
   loadPoolSimulation,
   reconstructCombinedBins,
-  positionDisplayName,
   type PairGroup,
   type WalletPoolSummary,
   type WalletPositionDetail,
@@ -98,6 +96,23 @@ const FormattedNumber = ({ value, maximumFractionDigits = 4 }: { value: number; 
 
   return <>{formatted}</>;
 };
+
+function AnalysisStat({
+  label,
+  children,
+  className,
+}: {
+  label: string;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-0.5 bg-gradient-to-br from-secondary/80 to-secondary/40 px-3 py-2.5">
+      <span className="truncate text-[10px] uppercase tracking-wide text-muted-foreground leading-tight">{label}</span>
+      <span className={cn("font-semibold tabular-nums text-[15px] leading-tight", className)}>{children}</span>
+    </div>
+  );
+}
 
 
 export function DlmmSimulator() {
@@ -201,16 +216,8 @@ export function DlmmSimulator() {
       setInitialBins(walletBins);
       return;
     }
-    if (simulationParams) {
-      const bins = getInitialBins(simulationParams);
-      setInitialBins(bins);
-      if (currentPrice === '') {
-        setCurrentPrice(simulationParams.initialPrice);
-      }
-    } else {
-      setInitialBins([]);
-    }
-  }, [simulationParams, walletBins, walletSlices, walletReplay]);
+    setInitialBins([]);
+  }, [walletBins, walletSlices, walletReplay]);
 
   useEffect(() => {
     if (walletSlices.length && typeof currentPrice === 'number') {
@@ -339,7 +346,7 @@ export function DlmmSimulator() {
       next[index] = tx;
       return next;
     });
-    setMobileSection('liquidity');
+    setMobileSection('analysis');
     window.scrollTo({ top: 0, behavior: 'auto' });
   };
 
@@ -553,7 +560,7 @@ export function DlmmSimulator() {
       setOriginalInitialPrice(exactBinPrice);
       setSimulatedTxs([]);
       setWalletBins(bins.length ? bins : loaded.bins);
-      setMobileSection('liquidity');
+      setMobileSection('analysis');
       setParams({
         strategy: 'spot',
         binStep: pool.bin_step || payload.pool.binStep,
@@ -825,8 +832,12 @@ export function DlmmSimulator() {
       )}
 
       {selectedPool && (
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className={cn("lg:col-span-1 flex flex-col gap-6", mobileSection !== 'position' && "hidden lg:flex")}>
+      <div className={cn("grid grid-cols-1 gap-6", hasPosition && "lg:grid-cols-3")}>
+        <div className={cn(
+          "flex flex-col gap-6",
+          hasPosition ? "lg:col-span-1" : "lg:max-w-xl",
+          mobileSection !== 'position' && "hidden lg:flex"
+        )}>
           {typeof currentPrice === 'number' && canStackPositions && (
             <Card className="border-primary/20 bg-card/50 backdrop-blur-sm hover:border-primary/40 transition-all duration-300">
               <CardHeader className="hidden lg:block">
@@ -861,18 +872,19 @@ export function DlmmSimulator() {
           )}
         </div>
 
-        <div className="lg:col-span-2 flex flex-col gap-6">
-          <Card className={cn("flex flex-col border-primary/20 bg-card/50 backdrop-blur-sm hover:border-primary/40 transition-all duration-300", mobileSection !== 'liquidity' && "hidden lg:flex")}>
-            <CardHeader>
+        <div className={cn(
+          "lg:col-span-2 flex flex-col",
+          (!hasPosition || mobileSection !== 'analysis') && "hidden",
+          hasPosition && "lg:flex"
+        )}>
+          <Card className="flex flex-col border-primary/20 bg-card/50 backdrop-blur-sm hover:border-primary/40 transition-all duration-300">
+            <CardHeader className="p-3 pb-2 lg:p-6 lg:pb-4">
               <CardTitle className="flex items-center gap-2 text-lg">
                 <div className="p-2 rounded-lg bg-primary/10">
-                  <CandlestickChart className="h-4 w-4 text-primary" />
+                  <BarChart3 className="h-4 w-4 text-primary" />
                 </div>
                 <span>
-                  <span className="lg:hidden">Liquidity Distribution</span>
-                  <span className="hidden lg:inline">
-                    {selectedPool && params.binStep ? `Liquidity Distribution for ${selectedPool.name} ${params.binStep} Bin Step` : 'Liquidity Distribution'}
-                  </span>
+                  Analysis
                   {stackedPositions.length > 1 ? ` · ${stackedPositions.length} positions combined` : ''}
                 </span>
                 {selectedPool && (
@@ -888,7 +900,7 @@ export function DlmmSimulator() {
                 )}
               </CardTitle>
             </CardHeader>
-            <CardContent className="flex flex-col gap-4 pt-2">
+            <CardContent className="flex flex-col gap-3 p-3 pt-0 lg:gap-4 lg:p-6 lg:pt-0">
               {canStackPositions && typeof params.initialPrice === 'number' && (
                 <div className="flex items-center gap-2 overflow-x-auto pb-1 -mx-1 px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                   <span className="shrink-0 text-xs text-muted-foreground mr-1">Price shock</span>
@@ -943,110 +955,41 @@ export function DlmmSimulator() {
                   </div>
                 )}
               </div>
-            </CardContent>
-          </Card>
-
-          <Card className={cn("border-primary/20 bg-card/50 backdrop-blur-sm hover:border-primary/40 transition-all duration-300", mobileSection !== 'analysis' && "hidden lg:block")}>
-            <CardHeader>
-              <CardTitle className="text-lg">Position Analysis</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {analysis ? (
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                  <div className="metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm">
-                    <span className="text-muted-foreground text-xs uppercase tracking-wide">Initial Position Value</span>
-                    <span className="font-bold text-xl mt-1"><FormattedNumber value={initialTotalValue} maximumFractionDigits={4} /></span>
+              {analysis && (
+                <div className="flex flex-col gap-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-px overflow-hidden rounded-xl border border-border/50 bg-border/50">
+                    <AnalysisStat label="Initial Value">
+                      <FormattedNumber value={initialTotalValue} maximumFractionDigits={4} />
+                    </AnalysisStat>
+                    <AnalysisStat label="Current Value">
+                      <FormattedNumber value={analysis.totalValueInQuote} maximumFractionDigits={4} />
+                    </AnalysisStat>
+                    <AnalysisStat label="Value Change" className={valueChangeColorClass}>
+                      {valueChangeDisplay}
+                    </AnalysisStat>
+                    <AnalysisStat label="Profit/Loss" className={plColorClass}>
+                      <FormattedNumber value={profitLoss} maximumFractionDigits={4} />
+                    </AnalysisStat>
+                    <AnalysisStat label={`${tokenSymbols.base} Tokens`}>
+                      <FormattedNumber value={displayBase} maximumFractionDigits={4} />
+                    </AnalysisStat>
+                    <AnalysisStat label={`${tokenSymbols.quote} Tokens`}>
+                      <FormattedNumber value={displayQuote} maximumFractionDigits={4} />
+                    </AnalysisStat>
+                    <AnalysisStat label="Price Change" className={priceChangeColorClass}>
+                      {priceChangeDisplay}
+                    </AnalysisStat>
+                    <AnalysisStat label={avgPriceLabel}>
+                      <FormattedNumber value={averagePricePaid} maximumFractionDigits={4} />
+                    </AnalysisStat>
                   </div>
-                  <div className="metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm">
-                    <span className="text-muted-foreground text-xs uppercase tracking-wide">Current Position Value</span>
-                    <span className="font-bold text-xl mt-1"><FormattedNumber value={analysis.totalValueInQuote} maximumFractionDigits={4} /></span>
-                  </div>
-                  <div className={`metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm ${valueChangeColorClass}`}>
-                    <span className="text-muted-foreground text-xs uppercase tracking-wide">Position Value Change</span>
-                    <span className="font-bold text-xl mt-1">{valueChangeDisplay}</span>
-                  </div>
-                  <div className={`metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm ${plColorClass}`}>
-                    <span className="text-muted-foreground text-xs uppercase tracking-wide">Profit/Loss</span>
-                    <span className="font-bold text-xl mt-1"><FormattedNumber value={profitLoss} maximumFractionDigits={4} /></span>
-                  </div>
-                  <div className={`metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm ${priceChangeColorClass}`}>
-                    <span className="text-muted-foreground text-xs uppercase tracking-wide">Price Pct. Change</span>
-                    <span className="font-bold text-xl mt-1">{priceChangeDisplay}</span>
-                  </div>
-                  <div className="metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm">
-                    <span className="text-muted-foreground text-xs uppercase tracking-wide">{tokenSymbols.base} Tokens</span>
-                    <span className="font-bold text-xl mt-1"><FormattedNumber value={displayBase} maximumFractionDigits={4} /></span>
-                  </div>
-                  <div className="metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm">
-                    <span className="text-muted-foreground text-xs uppercase tracking-wide">{tokenSymbols.quote} Tokens</span>
-                    <span className="font-bold text-xl mt-1"><FormattedNumber value={displayQuote} maximumFractionDigits={4} /></span>
-                  </div>
-                  <div className="metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm">
-                    <span className="text-muted-foreground text-xs uppercase tracking-wide">Total Bins</span>
-                    <span className="font-bold text-xl mt-1">{analysis.totalBins}</span>
-                  </div>
-                  <div className="metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm">
-                    <span className="text-muted-foreground text-xs uppercase tracking-wide">{tokenSymbols.base} Bins</span>
-                    <span className="font-bold text-xl mt-1">{analysis.baseBins}</span>
-                  </div>
-                  <div className="metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm">
-                    <span className="text-muted-foreground text-xs uppercase tracking-wide">{tokenSymbols.quote} Bins</span>
-                    <span className="font-bold text-xl mt-1">{analysis.quoteBins}</span>
-                  </div>
-                  <div className="metric-card flex flex-col gap-1 p-4 bg-gradient-to-br from-secondary/80 to-secondary/40 rounded-xl border border-border/50 backdrop-blur-sm">
-                    <span className="text-muted-foreground text-xs uppercase tracking-wide">{avgPriceLabel}</span>
-                    <span className="font-bold text-xl mt-1"><FormattedNumber value={averagePricePaid} maximumFractionDigits={4} /></span>
-                  </div>
-                </div>
-              ) : (
-                <p className="text-muted-foreground">Create a position to see analysis.</p>
-              )}
-              {walletPositions.length > 0 && analysis && (
-                <div className="mt-6 overflow-x-auto">
-                  <div className="mb-2 text-sm font-medium">Combined positions</div>
-                  <table className="w-full text-xs">
-                    <thead className="text-muted-foreground">
-                      <tr className="border-b border-border/60 text-left">
-                        <th className="py-2 pr-3 font-medium">Position</th>
-                        <th className="py-2 pr-3 font-medium">Range</th>
-                        <th className="py-2 pr-3 font-medium">{tokenSymbols.base}</th>
-                        <th className="py-2 pr-3 font-medium">{tokenSymbols.quote}</th>
-                        <th className="py-2 pr-3 font-medium">Value</th>
-                        <th className="py-2 font-medium">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {walletPositions.map((position) => (
-                        <tr key={position.positionAddress} className="border-b border-border/40">
-                          <td className="py-2 pr-3 font-mono">
-                            {positionDisplayName(position, walletPositions)}
-                          </td>
-                          <td className="py-2 pr-3">{position.minPrice.toPrecision(5)} – {position.maxPrice.toPrecision(5)}</td>
-                          <td className="py-2 pr-3">
-                            {position.isOutOfRange && position.baseAmount < position.quoteAmount
-                              ? '—'
-                              : <FormattedNumber value={position.baseAmount} maximumFractionDigits={4} />}
-                          </td>
-                          <td className="py-2 pr-3">
-                            {position.isOutOfRange && position.quoteAmount <= position.baseAmount
-                              ? '—'
-                              : <FormattedNumber value={position.quoteAmount} maximumFractionDigits={4} />}
-                          </td>
-                          <td className="py-2 pr-3">{formatUSD(position.valueUsd)}</td>
-                          <td className="py-2">
-                            <div className="flex flex-wrap items-center gap-1">
-                              {position.isSimulated && <Badge variant="outline">Simulated</Badge>}
-                              {position.isOutOfRange ? (
-                                <span className="text-red-400">Out of range</span>
-                              ) : (
-                                <span className="text-green-400">In range</span>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <p className="text-xs text-muted-foreground px-0.5">
+                    {analysis.totalBins} bins
+                    <span className="mx-1.5 text-border">·</span>
+                    {analysis.baseBins} {tokenSymbols.base}
+                    <span className="mx-1.5 text-border">·</span>
+                    {analysis.quoteBins} {tokenSymbols.quote}
+                  </p>
                 </div>
               )}
             </CardContent>

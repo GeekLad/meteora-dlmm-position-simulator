@@ -67,7 +67,7 @@ function formatPct(pct: number): string {
   const abs = Math.abs(pct);
   const body = abs.toLocaleString('en-US', { maximumFractionDigits: 2, minimumFractionDigits: 2 });
   if (Math.abs(pct) < 0.005) return '0.00%';
-  return `${pct > 0 ? '+' : '-'}${body}%`;
+  return `${pct < 0 ? '-' : ''}${body}%`;
 }
 
 function parsePrice(raw: string): number | null {
@@ -163,8 +163,7 @@ export function RangeEditor({
         onDragMax={id => bounds && clampRange(bounds.min.id, id)}
       />
 
-      <div className="grid grid-cols-2 gap-2">
-        <div className="min-w-0">
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 lg:gap-2">
         <PriceBoundField
           label="Min Price"
           price={bounds?.min.price ?? minPrice}
@@ -174,8 +173,6 @@ export function RangeEditor({
           canStepDown={bounds ? bounds.bins < MAX_POSITION_BINS : false}
           canStepUp={bounds ? bounds.bins > 1 : false}
         />
-        </div>
-        <div className="min-w-0">
         <PriceBoundField
           label="Max Price"
           price={bounds?.max.price ?? maxPrice}
@@ -185,7 +182,6 @@ export function RangeEditor({
           canStepDown={bounds ? bounds.bins > 1 : false}
           canStepUp={bounds ? bounds.bins < MAX_POSITION_BINS : false}
         />
-        </div>
       </div>
 
       <div className="text-xs text-muted-foreground">
@@ -520,7 +516,7 @@ function PriceBoundField({
   return (
     <div className="space-y-1.5">
       <label htmlFor={priceId} className="text-xs font-medium text-muted-foreground">{label}</label>
-      <div className="flex h-11 min-w-0 overflow-hidden rounded-md border border-input bg-background">
+      <div className="flex h-14 min-w-0 overflow-hidden rounded-lg border border-input bg-background lg:h-11 lg:rounded-md">
         <input
           id={priceId}
           inputMode="decimal"
@@ -537,7 +533,7 @@ function PriceBoundField({
           onKeyDown={event => {
             if (event.key === 'Enter') (event.target as HTMLInputElement).blur();
           }}
-          className="min-w-0 flex-1 bg-transparent px-1.5 text-xs font-semibold tabular-nums outline-none sm:px-2 sm:text-sm"
+          className="min-w-0 flex-1 bg-transparent px-3 text-lg font-semibold tabular-nums outline-none lg:px-2 lg:text-sm"
         />
         <input
           id={pctId}
@@ -557,9 +553,9 @@ function PriceBoundField({
           onKeyDown={event => {
             if (event.key === 'Enter') (event.target as HTMLInputElement).blur();
           }}
-          className="w-14 shrink-0 border-l border-input bg-transparent px-1 text-[11px] tabular-nums text-muted-foreground outline-none sm:w-[4.25rem] sm:px-1.5 sm:text-xs"
+          className="w-[5.25rem] shrink-0 border-l border-input bg-transparent px-2 text-right text-sm tabular-nums text-muted-foreground outline-none lg:w-[4.25rem] lg:px-1.5 lg:text-xs"
         />
-        <div className="flex w-7 shrink-0 flex-col border-l border-input">
+        <div className="flex w-10 shrink-0 flex-col border-l border-input lg:w-7">
           <button
             type="button"
             aria-label={`Increase ${label}`}
@@ -567,7 +563,7 @@ function PriceBoundField({
             onClick={() => onStep(1)}
             className="flex h-1/2 items-center justify-center text-muted-foreground hover:bg-secondary hover:text-foreground disabled:opacity-40"
           >
-            <Plus className="h-3 w-3" />
+            <Plus className="h-4 w-4 lg:h-3 lg:w-3" />
           </button>
           <button
             type="button"
@@ -576,7 +572,7 @@ function PriceBoundField({
             onClick={() => onStep(-1)}
             className="flex h-1/2 items-center justify-center border-t border-input text-muted-foreground hover:bg-secondary hover:text-foreground disabled:opacity-40"
           >
-            <Minus className="h-3 w-3" />
+            <Minus className="h-4 w-4 lg:h-3 lg:w-3" />
           </button>
         </div>
       </div>

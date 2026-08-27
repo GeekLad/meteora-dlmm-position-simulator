@@ -1,9 +1,9 @@
 'use client';
 
-import { BarChart3, CandlestickChart, Layers } from 'lucide-react';
+import { BarChart3, Layers } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-export const MOBILE_SECTIONS = ['position', 'liquidity', 'analysis'] as const;
+export const MOBILE_SECTIONS = ['position', 'analysis'] as const;
 export type MobileSection = (typeof MOBILE_SECTIONS)[number];
 
 const TABS: {
@@ -11,8 +11,7 @@ const TABS: {
   label: string;
   icon: typeof Layers;
 }[] = [
-  { id: 'position', label: 'Position', icon: Layers },
-  { id: 'liquidity', label: 'Liquidity', icon: CandlestickChart },
+  { id: 'position', label: 'Positions', icon: Layers },
   { id: 'analysis', label: 'Analysis', icon: BarChart3 },
 ];
 
@@ -28,7 +27,7 @@ export function MobileSectionNav({ value, onChange, hasPosition }: MobileSection
       className="fixed inset-x-0 bottom-0 z-50 border-t border-primary/20 bg-background/95 pb-[env(safe-area-inset-bottom,0px)] backdrop-blur-md lg:hidden"
       aria-label="Simulator sections"
     >
-      <div className="grid h-14 grid-cols-3" role="tablist">
+      <div className="grid h-14 grid-cols-2" role="tablist">
         {TABS.map((tab) => {
           const disabled = tab.id !== 'position' && !hasPosition;
           const active = value === tab.id;
