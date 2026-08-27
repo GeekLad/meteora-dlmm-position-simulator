@@ -37,6 +37,8 @@ export function calculateStrategyWeights(
   // Bins at or below the real active price hold quote; above hold base.
   const quoteHi = Math.min(activeBinId, maxBinId);
   const baseLo = Math.max(activeBinId + 1, minBinId);
+  // Shape is relative to the in-range edge when the active price is out of range.
+  const shapeActive = Math.min(maxBinId, Math.max(minBinId, activeBinId));
 
   switch (strategy) {
     case 'spot': {
@@ -49,10 +51,10 @@ export function calculateStrategyWeights(
     case 'bid-ask': {
       // More weight farther from the active price (V shape / order-book ends).
       for (let id = minBinId; id <= quoteHi; id++) {
-        weights.set(id, activeBinId - id + 1);
+        weights.set(id, shapeActive - id + 1);
       }
       for (let id = baseLo; id <= maxBinId; id++) {
-        weights.set(id, id - activeBinId + 1);
+        weights.set(id, id - shapeActive + 1);
       }
       break;
     }

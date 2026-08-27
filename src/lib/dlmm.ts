@@ -162,6 +162,12 @@ export function binInitialDisplayValue(bin: SimulatedBin): number {
   return bin.initialTokenType === 'base' ? bin.initialAmount * bin.price : bin.initialAmount;
 }
 
+/** Meteora-style bar height from the bin's current contents after price movement. */
+export function binCurrentDisplayValue(bin: SimulatedBin): number {
+  if (bin.currentTokenType === 'base') return bin.currentAmount * bin.price;
+  return bin.currentAmount;
+}
+
 function refreshInitialDisplayValue(bin: SimulatedBin): void {
   bin.initialDisplayValue = bin.initialTokenType === 'base'
     ? bin.initialAmount * bin.price

@@ -209,8 +209,7 @@ export function replayTransactions(
     if (targets.length === 0) continue;
 
     if (tx.type === 'remove-liquidity') {
-      const factor = Math.max(0, 1 - tx.removeBps / 10000);
-      for (const slice of targets) slice.scale *= factor;
+      applyRemoveLiquidity(targets, tx, replay);
       continue;
     }
 
@@ -235,6 +234,89 @@ export function replayTransactions(
   }
 
   return slices;
+}
+
+function applyRemoveLiquidity(
+  targets: LiquiditySlice[],
+  tx: SimulatedTransaction,
+  replay: ReplayOptions
+): void {
+  const factor = Math.max(0, 1 - tx.removeBps / 10000);
+  const hasRange = tx.lowerPrice > 0 && tx.upperPrice > 0;
+  let minBinId = Number.NEGATIVE_INFINITY;
+  let maxBinId = Number.POSITIVE_INFINITY;
+  if (hasRange) {
+    minBinId = getIdFromPrice(
+      Math.min(tx.lowerPrice, tx.upperPrice),
+      replay.binStep,
+      replay.baseDecimals,
+      replay.quoteDecimals,
+      replay.applyDecimalAdjustment
+    );
+    maxBinId = getIdFromPrice(
+      Math.max(tx.lowerPrice, tx.upperPrice),
+      replay.binStep,
+      replay.baseDecimals,
+      replay.quoteDecimals,
+      replay.applyDecimalAdjustment
+    );
+  }
+
+  for (const slice of targets) {
+    const coversSlice = minBinId <= slice.lowerBinId && maxBinId >= slice.upperBinId;
+    if (coversSlice) {
+      slice.scale *= factor;
+      continue;
+    }
+    slice.bins = slice.bins.map(bin => (
+      bin.id >= minBinId && bin.id <= maxBinId ? scaleBins([bin], factor)[0] : bin
+    ));
+  }
+}
+
+/** Current bins for one position, spanning its official range (empty bins included). */
+export function binsForPosition(
+  slices: LiquiditySlice[],
+  positionAddress: string,
+  currentPrice: number,
+  replay?: ReplayOptions | null
+): SimulatedBin[] {
+  const group = slices.filter(slice => slice.positionAddress === positionAddress && slice.scale > 0);
+  if (group.length === 0) return [];
+  const simulated = simulateSlices(group, currentPrice, null);
+  const host = group[0];
+  if (!replay || host.lowerBinId > host.upperBinId) {
+    return trimEmptyEdgeBins(simulated);
+  }
+  const currentActiveId = getIdFromPrice(
+    currentPrice,
+    replay.binStep,
+    replay.baseDecimals,
+    replay.quoteDecimals,
+    replay.applyDecimalAdjustment
+  );
+  return mergeSimulatedBins([simulated], {
+    binStep: replay.binStep,
+    baseDecimals: replay.baseDecimals,
+    quoteDecimals: replay.quoteDecimals,
+    applyDecimalAdjustment: replay.applyDecimalAdjustment,
+    activeBinId: currentActiveId,
+    fillGaps: true,
+    maxFilledBins: 1400,
+    spanMinId: host.lowerBinId,
+    spanMaxId: host.upperBinId,
+  });
+}
+
+export function amountsInBinRange(
+  bins: SimulatedBin[],
+  minBinId: number,
+  maxBinId: number
+): { base: number; quote: number; value: number } {
+  return binsToAmounts(
+    bins.filter(bin => bin.id >= minBinId && bin.id <= maxBinId),
+    true
+  );
 }
 
 function displayBinSpan(slices: LiquiditySlice[]): { minId: number; maxId: number } | null {
@@ -478,7 +560,10 @@ export function describeTransaction(
     if (tx.baseAmount > 0) parts.push(`${trimNum(tx.baseAmount)} ${symbols.base}`);
     if (tx.quoteAmount > 0) parts.push(`${trimNum(tx.quoteAmount)} ${symbols.quote}`);
     const amount = parts.length ? ` · ${parts.join(' + ')}` : '';
-    return `Remove ${(tx.removeBps / 100).toFixed(0)}%${amount} at ${price}`;
+    const range = tx.lowerPrice > 0 && tx.upperPrice > 0
+      ? ` of ${trimNum(tx.lowerPrice)}–${trimNum(tx.upperPrice)}`
+      : '';
+    return `Remove ${(tx.removeBps / 100).toFixed(0)}%${range}${amount} at ${price}`;
   }
   const parts: string[] = [];
   if (tx.baseAmount > 0) parts.push(`${trimNum(tx.baseAmount)} ${symbols.base}`);

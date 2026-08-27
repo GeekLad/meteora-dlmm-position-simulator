@@ -13,14 +13,20 @@ import { formatNumberForDisplay } from '@/lib/display-formatting';
 import { formatUSD } from '@/lib/meteora-api';
 import { positionDisplayName, shortenAddress, type WalletPositionDetail } from '@/lib/wallet-positions';
 import {
+  amountsInBinRange,
+  binsForPosition,
   describeTransaction,
   newSimulatedPositionAddress,
   newTxId,
+  replayTransactions,
+  type LiquiditySlice,
+  type ReplayOptions,
   type SimulatedTransaction,
   type SimulatedTxType,
 } from '@/lib/position-transactions';
 import { RangeEditor } from '@/components/range-editor';
-import { depositSide, getIdFromPrice, pairAmountForStrategy, rangeForDeposit, type Strategy } from '@/lib/dlmm';
+import { RemovalRangePicker } from '@/components/removal-range-picker';
+import { getIdFromPrice, getPriceFromId, pairAmountForStrategy, rangeForDeposit, type Strategy } from '@/lib/dlmm';
 import { cn } from '@/lib/utils';
 
 export interface ChangeFocus {
@@ -32,6 +38,7 @@ interface PositionChangesProps {
   positions: WalletPositionDetail[];
   transactions: SimulatedTransaction[];
   currentPrice: number;
+  initialPrice: number;
   tokenSymbols: { base: string; quote: string };
   defaultLowerPrice: number;
   defaultUpperPrice: number;
@@ -41,12 +48,15 @@ interface PositionChangesProps {
   quoteDecimals: number;
   applyDecimalAdjustment: boolean;
   focusRequest: ChangeFocus | null;
+  baseSlices: LiquiditySlice[];
+  replayOptions: ReplayOptions | null;
   onApply: (tx: SimulatedTransaction) => void;
   onRemoveTx: (id: string) => void;
   onDeletePosition: (positionAddress: string) => void;
   onRestore: () => void;
   onFocusHandled: () => void;
   emptyHint?: string;
+  showRestore?: boolean;
 }
 
 const DUST = 1e-9;
@@ -98,6 +108,7 @@ export function PositionChanges({
   positions,
   transactions,
   currentPrice,
+  initialPrice,
   tokenSymbols,
   defaultLowerPrice,
   defaultUpperPrice,
@@ -107,12 +118,15 @@ export function PositionChanges({
   quoteDecimals,
   applyDecimalAdjustment,
   focusRequest,
+  baseSlices,
+  replayOptions,
   onApply,
   onRemoveTx,
   onDeletePosition,
   onRestore,
   onFocusHandled,
   emptyHint,
+  showRestore = true,
 }: PositionChangesProps) {
   const [activeForm, setActiveForm] = useState<SimulatedTxType | null>(
     () => (positions.length === 0 ? 'add-position' : null)
@@ -123,7 +137,7 @@ export function PositionChanges({
   const [quoteAmount, setQuoteAmount] = useState('');
   const [lowerPrice, setLowerPrice] = useState(String(defaultLowerPrice || ''));
   const [upperPrice, setUpperPrice] = useState(String(defaultUpperPrice || ''));
-  const [removePct, setRemovePct] = useState(25);
+  const [removePct, setRemovePct] = useState(100);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [autoFill, setAutoFill] = useState(false);
   const lastAutoFilled = useRef<'base' | 'quote' | null>(null);
@@ -131,6 +145,28 @@ export function PositionChanges({
   const skipEmptyFormRef = useRef(false);
 
   const positionTitle = (position: WalletPositionDetail) => positionDisplayName(position, positions);
+
+  const seedRemovalRange = (position: WalletPositionDetail) => {
+    if (replayOptions && position.lowerBinId <= position.upperBinId) {
+      setLowerPrice(String(getPriceFromId(
+        position.lowerBinId,
+        binStep,
+        baseDecimals,
+        quoteDecimals,
+        applyDecimalAdjustment
+      )));
+      setUpperPrice(String(getPriceFromId(
+        position.upperBinId,
+        binStep,
+        baseDecimals,
+        quoteDecimals,
+        applyDecimalAdjustment
+      )));
+      return;
+    }
+    setLowerPrice(String(position.minPrice));
+    setUpperPrice(String(position.maxPrice));
+  };
 
   const txPositionLabel = (address: string) => {
     const match = positions.find(position => position.positionAddress === address);
@@ -163,14 +199,33 @@ export function PositionChanges({
     return 69;
   }, [positions, binStep, defaultLowerPrice, defaultUpperPrice, baseDecimals, quoteDecimals, applyDecimalAdjustment]);
 
-  const seedCreateRange = (base = Number(baseAmount) || 0, quote = Number(quoteAmount) || 0) => {
-    if (currentPrice > 0 && binStep > 0) {
-      const side = depositSide(base, quote);
+  const seedCreateRange = () => {
+    const template = positions[0];
+    if (template && template.upperBinId >= template.lowerBinId && binStep > 0) {
+      setLowerPrice(String(getPriceFromId(
+        template.lowerBinId,
+        binStep,
+        baseDecimals,
+        quoteDecimals,
+        applyDecimalAdjustment
+      )));
+      setUpperPrice(String(getPriceFromId(
+        template.upperBinId,
+        binStep,
+        baseDecimals,
+        quoteDecimals,
+        applyDecimalAdjustment
+      )));
+      rangeTouchedRef.current = false;
+      return;
+    }
+    const anchorPrice = initialPrice > 0 ? initialPrice : currentPrice;
+    if (anchorPrice > 0 && binStep > 0) {
       const range = rangeForDeposit({
-        currentPrice,
+        currentPrice: anchorPrice,
         binStep,
         widthBins: templateWidthBins,
-        side,
+        side: 'both',
         baseDecimals,
         quoteDecimals,
         applyDecimalAdjustment,
@@ -193,7 +248,7 @@ export function PositionChanges({
     lastAutoFilled.current = null;
     rangeTouchedRef.current = false;
     if (positions.length === 0 && !skipEmptyFormRef.current) {
-      seedCreateRange(0, 0);
+      seedCreateRange();
       setActiveForm('add-position');
     } else {
       setActiveForm(null);
@@ -217,7 +272,7 @@ export function PositionChanges({
       return;
     }
     if (activeForm !== 'add-position') {
-      seedCreateRange(0, 0);
+      seedCreateRange();
       setActiveForm('add-position');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -236,17 +291,25 @@ export function PositionChanges({
     if (!focusRequest) return;
     setActiveForm(focusRequest.mode);
     if (focusRequest.positionAddress) setPositionAddress(focusRequest.positionAddress);
+    if (focusRequest.mode === 'remove-liquidity') {
+      const targetAddress = focusRequest.positionAddress
+        ?? positionAddress
+        ?? positions[0]?.positionAddress;
+      const position = positions.find(item => item.positionAddress === targetAddress);
+      setEditingId(null);
+      setRemovePct(100);
+      if (position) seedRemovalRange(position);
+    }
     onFocusHandled();
   }, [focusRequest, onFocusHandled]);
 
   useEffect(() => {
     if (activeForm !== 'add-position' || editingId) return;
     if (rangeTouchedRef.current) return;
-    if (!(currentPrice > 0) || !(binStep > 0)) return;
     seedCreateRange();
-    // Re-place an unedited Create range when price moves or the deposit becomes one-sided.
+    // Keep an unedited Create range on the position/template bounds, not the shocked price.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPrice, activeForm, editingId, baseAmount, quoteAmount, templateWidthBins]);
+  }, [activeForm, editingId, templateWidthBins, positions.length, initialPrice]);
 
   const selected = useMemo(
     () => positions.find(position => position.positionAddress === positionAddress),
@@ -307,15 +370,46 @@ export function PositionChanges({
     if (autoFill && amount > 0) fillPairedAmount('quote', amount);
   };
 
+  const removalBins = useMemo(() => {
+    if (activeForm !== 'remove-liquidity' || !replayOptions || !positionAddress) return [];
+    const txs = editingId ? transactions.filter(tx => tx.id !== editingId) : transactions;
+    const slices = replayTransactions(baseSlices, txs, replayOptions);
+    return binsForPosition(slices, positionAddress, currentPrice, replayOptions);
+  }, [activeForm, replayOptions, positionAddress, editingId, transactions, baseSlices, currentPrice]);
+
+  const removalRangeIds = useMemo(() => {
+    if (!replayOptions || removalBins.length === 0) return null;
+    const spanMin = removalBins[0].id;
+    const spanMax = removalBins[removalBins.length - 1].id;
+    const rawMin = Number(lowerPrice) > 0
+      ? getIdFromPrice(Number(lowerPrice), binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment)
+      : spanMin;
+    const rawMax = Number(upperPrice) > 0
+      ? getIdFromPrice(Number(upperPrice), binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment)
+      : spanMax;
+    return {
+      minId: Math.min(spanMax, Math.max(spanMin, Math.min(rawMin, rawMax))),
+      maxId: Math.min(spanMax, Math.max(spanMin, Math.max(rawMin, rawMax))),
+    };
+  }, [replayOptions, removalBins, lowerPrice, upperPrice, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment]);
+
   const removalPreview = useMemo(() => {
     if (!selected || activeForm !== 'remove-liquidity') return null;
     const factor = removePct / 100;
+    if (removalRangeIds && removalBins.length) {
+      const inRange = amountsInBinRange(removalBins, removalRangeIds.minId, removalRangeIds.maxId);
+      return {
+        base: inRange.base * factor,
+        quote: inRange.quote * factor,
+        outOfRange: false,
+      };
+    }
     return {
       base: selected.baseAmount * factor,
       quote: selected.quoteAmount * factor,
       outOfRange: selected.isOutOfRange,
     };
-  }, [selected, activeForm, removePct]);
+  }, [selected, activeForm, removePct, removalRangeIds, removalBins]);
 
   const apply = () => {
     const price = currentPrice;
@@ -330,8 +424,8 @@ export function PositionChanges({
         strategy,
         baseAmount: removalPreview?.base ?? 0,
         quoteAmount: removalPreview?.quote ?? 0,
-        lowerPrice: selected?.minPrice ?? 0,
-        upperPrice: selected?.maxPrice ?? 0,
+        lowerPrice: Number(lowerPrice) || selected?.minPrice || 0,
+        upperPrice: Number(upperPrice) || selected?.maxPrice || 0,
         positionAddress,
         removeBps: Math.round(removePct * 100),
       });
@@ -425,7 +519,7 @@ export function PositionChanges({
     setQuoteAmount('');
     setAutoFill(false);
     lastAutoFilled.current = null;
-    seedCreateRange(0, 0);
+    seedCreateRange();
     setActiveForm('add-position');
     window.scrollTo({ top: 0, behavior: 'auto' });
   };
@@ -442,16 +536,27 @@ export function PositionChanges({
   };
 
   const openRemoveLiquidity = (address: string) => {
+    const position = positions.find(item => item.positionAddress === address);
     setEditingId(null);
     setBaseAmount('');
     setQuoteAmount('');
-    setRemovePct(25);
+    setRemovePct(100);
     setPositionAddress(address);
+    if (position) seedRemovalRange(position);
     setActiveForm('remove-liquidity');
     window.scrollTo({ top: 0, behavior: 'auto' });
   };
 
   const hasTokenAmount = (Number(baseAmount) || 0) > 0 || (Number(quoteAmount) || 0) > 0;
+
+  const adjustedPriceNote = useMemo(() => {
+    if (!(initialPrice > 0) || !(currentPrice > 0)) return null;
+    if (Math.abs(currentPrice - initialPrice) < 1e-9) return null;
+    const pct = ((currentPrice - initialPrice) / initialPrice) * 100;
+    const signedPct = `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
+    const price = formatNumberForDisplay(currentPrice, { maximumFractionDigits: 6 });
+    return { price, signedPct };
+  }, [currentPrice, initialPrice]);
 
   const formTitle = activeForm === 'add-position'
     ? (editingId ? 'Edit simulated position' : 'New position')
@@ -486,6 +591,14 @@ export function PositionChanges({
               </Button>
             )}
           </div>
+
+          {adjustedPriceNote && (activeForm === 'add-position' || activeForm === 'add-liquidity') && (
+            <p className="rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs">
+              Liquidity added will be based on the new adjusted price of{' '}
+              <span className="font-medium tabular-nums">{adjustedPriceNote.price}</span>
+              {' '}({adjustedPriceNote.signedPct} of simulation starting price).
+            </p>
+          )}
 
           {activeForm === 'add-position' && (
             <RangeEditor
@@ -552,29 +665,57 @@ export function PositionChanges({
           )}
 
           {activeForm === 'remove-liquidity' && (
-            <div className="grid gap-2">
-              <div className="flex items-center justify-between text-xs">
-                <Label>Remove {removePct}%</Label>
-                <span className="text-muted-foreground">of this position</span>
-              </div>
-              <Slider
-                value={[removePct]}
-                min={1}
-                max={100}
-                step={1}
-                onValueChange={([value]) => setRemovePct(value)}
-              />
-              {removalPreview && (
-                <div className="rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs">
-                  <TokenAmounts
-                    base={removalPreview.base}
-                    quote={removalPreview.quote}
-                    outOfRange={removalPreview.outOfRange}
-                    symbols={tokenSymbols}
-                    prefix="Removes "
-                  />
-                </div>
+            <div className="grid gap-3">
+              {replayOptions && (
+                <RemovalRangePicker
+                  bins={removalBins}
+                  minPrice={Number(lowerPrice) || selected?.minPrice || 0}
+                  maxPrice={Number(upperPrice) || selected?.maxPrice || 0}
+                  currentPrice={currentPrice}
+                  binStep={binStep}
+                  baseDecimals={baseDecimals}
+                  quoteDecimals={quoteDecimals}
+                  applyDecimalAdjustment={applyDecimalAdjustment}
+                  tokenSymbols={tokenSymbols}
+                  removePct={removePct}
+                  onRangeChange={(nextMin, nextMax) => {
+                    setLowerPrice(String(nextMin));
+                    setUpperPrice(String(nextMax));
+                  }}
+                  onRemovePctChange={setRemovePct}
+                />
               )}
+              <div className="grid gap-2">
+                <div className="flex items-center justify-between text-xs">
+                  <Label>Remove {removePct}%</Label>
+                  <span className="text-muted-foreground">
+                    {removalRangeIds && removalBins.length && (
+                      removalRangeIds.minId > removalBins[0].id
+                      || removalRangeIds.maxId < removalBins[removalBins.length - 1].id
+                    )
+                      ? 'of selected bins'
+                      : 'of this position'}
+                  </span>
+                </div>
+                <Slider
+                  value={[removePct]}
+                  min={1}
+                  max={100}
+                  step={1}
+                  onValueChange={([value]) => setRemovePct(value)}
+                />
+                {removalPreview && (
+                  <div className="rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs">
+                    <TokenAmounts
+                      base={removalPreview.base}
+                      quote={removalPreview.quote}
+                      outOfRange={removalPreview.outOfRange}
+                      symbols={tokenSymbols}
+                      prefix="Removes "
+                    />
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -608,17 +749,19 @@ export function PositionChanges({
                 <Plus className="mr-1.5 h-3.5 w-3.5" />
                 New
               </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-8"
-                onClick={onRestore}
-                disabled={transactions.length === 0}
-              >
-                <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-                Restore original
-              </Button>
+              {showRestore && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8"
+                  onClick={onRestore}
+                  disabled={transactions.length === 0}
+                >
+                  <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
+                  Restore original
+                </Button>
+              )}
             </div>
           </div>
 
@@ -719,7 +862,7 @@ export function PositionChanges({
 
           {transactions.length > 0 && (
             <div className="space-y-2 border-t border-border/50 pt-3">
-              <div className="text-sm font-medium">Transaction log</div>
+              <div className="text-sm font-medium">Simulated transaction log</div>
               <div className="space-y-2">
                 {transactions.map((tx, index) => (
                   <div key={tx.id} className="rounded-md border bg-secondary/30 p-2 text-xs">

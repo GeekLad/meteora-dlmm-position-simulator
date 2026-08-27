@@ -177,14 +177,19 @@ export function DlmmSimulator() {
     };
   }, [params.binStep, params.initialPrice, baseDecimals, quoteDecimals, applyDecimalAdjustment, originalWalletPositions.length, simulatedTxs.length]);
 
+  const baseSlices = useMemo(() => {
+    if (!walletReplay) return [];
+    if (originalWalletPositions.length && originalInitialPrice != null) {
+      return originalSlices(originalWalletPositions, originalPositionBins, originalInitialPrice);
+    }
+    return [];
+  }, [walletReplay, originalWalletPositions, originalPositionBins, originalInitialPrice]);
+
   const walletSlices = useMemo(() => {
     if (!walletReplay) return [];
-    if (originalWalletPositions.length === 0 && simulatedTxs.length === 0) return [];
-    const base = originalWalletPositions.length && originalInitialPrice != null
-      ? originalSlices(originalWalletPositions, originalPositionBins, originalInitialPrice)
-      : [];
-    return replayTransactions(base, simulatedTxs, walletReplay);
-  }, [walletReplay, originalWalletPositions, originalPositionBins, originalInitialPrice, simulatedTxs]);
+    if (baseSlices.length === 0 && simulatedTxs.length === 0) return [];
+    return replayTransactions(baseSlices, simulatedTxs, walletReplay);
+  }, [walletReplay, baseSlices, simulatedTxs]);
 
   useEffect(() => {
     if (walletSlices.length && walletReplay) {
@@ -316,6 +321,7 @@ export function DlmmSimulator() {
     if (
       !walletBins
       && originalWalletPositions.length === 0
+      && simulatedTxs.length === 0
       && simulationParams
       && tx.type !== 'add-position'
     ) {
@@ -851,6 +857,7 @@ export function DlmmSimulator() {
                   positions={stackedPositions}
                   transactions={simulatedTxs}
                   currentPrice={currentPrice}
+                  initialPrice={typeof params.initialPrice === 'number' ? params.initialPrice : currentPrice}
                   tokenSymbols={tokenSymbols}
                   defaultLowerPrice={typeof params.lowerPrice === 'number' ? params.lowerPrice : currentPrice * 0.95}
                   defaultUpperPrice={typeof params.upperPrice === 'number' ? params.upperPrice : currentPrice * 1.05}
@@ -860,11 +867,14 @@ export function DlmmSimulator() {
                   quoteDecimals={quoteDecimals}
                   applyDecimalAdjustment={applyDecimalAdjustment}
                   focusRequest={changeFocus}
+                  baseSlices={baseSlices}
+                  replayOptions={walletReplay}
                   onApply={applySimulatedTx}
                   onRemoveTx={dropSimulatedTx}
                   onDeletePosition={deleteSimulatedPosition}
                   onRestore={restoreOriginalPositions}
                   onFocusHandled={() => setChangeFocus(null)}
+                  showRestore={!!walletBins}
                   emptyHint="No positions yet. Create one to start the simulation."
                 />
               </CardContent>
