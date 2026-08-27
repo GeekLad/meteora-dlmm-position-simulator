@@ -39,7 +39,6 @@ import {
   replayTransactions,
   simulateSlices,
   simulatedPositionDetail,
-  slicesCostBasis,
   type SimulatedTransaction,
 } from "@/lib/position-transactions";
 
@@ -163,19 +162,23 @@ export function DlmmSimulator() {
     };
   }, [params, baseDecimals, quoteDecimals, applyDecimalAdjustment]);
 
+  const firstTxPrice = simulatedTxs[0]?.price;
   const walletReplay = useMemo(() => {
     if (typeof params.binStep !== 'number') return null;
     if (originalWalletPositions.length === 0 && simulatedTxs.length === 0) return null;
+    // Keep reconstruction anchored to the price the positions were opened at so
+    // dragging the pool-price slider does not reshape existing liquidity.
+    const replayPrice = originalInitialPrice ?? firstTxPrice ?? 0;
     return {
       binStep: params.binStep,
       baseDecimals,
       quoteDecimals,
       applyDecimalAdjustment,
-      activeBinId: typeof params.initialPrice === 'number'
-        ? getIdFromPrice(params.initialPrice, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment)
+      activeBinId: replayPrice
+        ? getIdFromPrice(replayPrice, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment)
         : 0,
     };
-  }, [params.binStep, params.initialPrice, baseDecimals, quoteDecimals, applyDecimalAdjustment, originalWalletPositions.length, simulatedTxs.length]);
+  }, [params.binStep, originalInitialPrice, firstTxPrice, simulatedTxs.length, baseDecimals, quoteDecimals, applyDecimalAdjustment, originalWalletPositions.length]);
 
   const baseSlices = useMemo(() => {
     if (!walletReplay) return [];
@@ -309,8 +312,7 @@ export function DlmmSimulator() {
   };
   
   const handleInitialPriceChange = (newInitialPrice: number) => {
-    setParams(prev => ({...prev, initialPrice: newInitialPrice}));
-    setCurrentPrice(newInitialPrice);
+    setParams(prev => (prev.initialPrice === newInitialPrice ? prev : { ...prev, initialPrice: newInitialPrice }));
   }
 
   const handleCurrentPriceChange = (newCurrentPrice: number) => {
@@ -614,10 +616,22 @@ export function DlmmSimulator() {
   const analysis = simulation?.analysis;
 
   const initialTotalValue = useMemo(() => {
-    if (walletSlices.length) return slicesCostBasis(walletSlices);
-    if (!initialBins || initialBins.length === 0) return 0;
-    return initialBins.reduce((sum, bin) => sum + bin.initialValueInQuote, 0);
-  }, [initialBins, walletSlices]);
+    if (typeof params.initialPrice !== 'number') return 0;
+    const startPrice = params.initialPrice;
+    // Same price as now → same LP value, so P&L is exactly 0.
+    if (
+      analysis
+      && typeof currentPrice === 'number'
+      && Math.abs(currentPrice - startPrice) < 1e-9
+    ) {
+      return analysis.totalValueInQuote;
+    }
+    if (walletSlices.length) {
+      return analyzeCurrentBins(simulateSlices(walletSlices, startPrice, walletReplay)).totalValueInQuote;
+    }
+    if (!initialBins.length) return 0;
+    return runSimulation(initialBins, startPrice, startPrice).analysis.totalValueInQuote;
+  }, [analysis, currentPrice, params.initialPrice, walletSlices, walletReplay, initialBins]);
   
   
   // Position Value Change
@@ -672,9 +686,16 @@ export function DlmmSimulator() {
     }
   }
 
-  const isPristine = typeof currentPrice === 'number' && typeof params.initialPrice === 'number' && Math.abs(currentPrice - params.initialPrice) < 1e-9;
-  const displayBase = isPristine && simulatedTxs.length === 0 && typeof params.baseAmount === 'number' ? params.baseAmount : analysis?.totalBase ?? 0;
-  const displayQuote = isPristine && simulatedTxs.length === 0 && typeof params.quoteAmount === 'number' ? params.quoteAmount : analysis?.totalQuote ?? 0;
+  const compositionPrice = originalInitialPrice ?? firstTxPrice;
+  const isPristine = typeof currentPrice === 'number'
+    && simulatedTxs.length === 0
+    && (
+      compositionPrice != null
+        ? Math.abs(currentPrice - compositionPrice) < 1e-9
+        : typeof params.initialPrice === 'number' && Math.abs(currentPrice - params.initialPrice) < 1e-9
+    );
+  const displayBase = isPristine && typeof params.baseAmount === 'number' ? params.baseAmount : analysis?.totalBase ?? 0;
+  const displayQuote = isPristine && typeof params.quoteAmount === 'number' ? params.quoteAmount : analysis?.totalQuote ?? 0;
 
   // Calculate average price paid based on conversions that occurred
   const averagePricePaid = useMemo(() => {
@@ -730,10 +751,10 @@ export function DlmmSimulator() {
     <div className={cn("flex flex-col", selectedPool ? "gap-2 pb-20 lg:gap-8 lg:pb-0" : "gap-4 lg:gap-8")}>
       <header
         className={cn(
-          "rounded-2xl bg-gradient-to-r from-primary/10 via-purple-500/10 to-primary/10 border border-primary/20 backdrop-blur-sm",
+          "flex items-center justify-between rounded-2xl bg-gradient-to-r from-primary/10 via-purple-500/10 to-primary/10 border border-primary/20 backdrop-blur-sm",
           selectedPool
-            ? "flex items-center justify-between gap-2 p-2 sm:p-3 lg:p-6"
-            : "flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-4 sm:p-6"
+            ? "gap-2 p-2 sm:p-3 lg:p-6"
+            : "gap-4 p-4 sm:p-6"
         )}
       >
         <div className="flex min-w-0 items-center gap-2 lg:gap-3">
@@ -760,27 +781,27 @@ export function DlmmSimulator() {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5 lg:gap-2">
-          <ShareButton
-            currentPrice={currentPrice}
-            initialPrice={params.initialPrice}
-            selectedPool={selectedPool}
-            wallet={walletAddress}
-            disabled={!selectedPool && !walletAddress}
-            compact={!!selectedPool}
-          />
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleClear}
-            className={cn(
-              "hover:bg-primary/10 transition-all duration-300",
-              selectedPool && "h-8 w-8 px-0 lg:h-9 lg:w-auto lg:px-3"
-            )}
-            aria-label="Clear all"
-          >
-            <RefreshCcw className={cn("h-4 w-4", selectedPool ? "lg:mr-2" : "mr-2")} />
-            <span className={selectedPool ? "hidden lg:inline" : undefined}>Clear All</span>
-          </Button>
+          {selectedPool && (
+            <>
+              <ShareButton
+                currentPrice={currentPrice}
+                initialPrice={params.initialPrice}
+                selectedPool={selectedPool}
+                wallet={walletAddress}
+                compact
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleClear}
+                className="h-8 w-8 px-0 hover:bg-primary/10 transition-all duration-300 lg:h-9 lg:w-auto lg:px-3"
+                aria-label="Clear all"
+              >
+                <RefreshCcw className="h-4 w-4 lg:mr-2" />
+                <span className="hidden lg:inline">Clear All</span>
+              </Button>
+            </>
+          )}
           <ThemeToggle className={selectedPool ? "h-8 w-8" : undefined} />
         </div>
       </header>
@@ -798,14 +819,20 @@ export function DlmmSimulator() {
               value={sourceTab}
               onValueChange={(value) => setSourceTab(value as 'simulate' | 'wallet')}
             >
-              <TabsList className="grid w-full max-w-md grid-cols-2 mb-4">
-                <TabsTrigger value="simulate" className="gap-1.5">
+              <TabsList className="grid w-full max-w-lg grid-cols-2 mb-4">
+                <TabsTrigger
+                  value="simulate"
+                  className="gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
+                >
                   <FlaskConical className="h-4 w-4" />
                   New position
                 </TabsTrigger>
-                <TabsTrigger value="wallet" className="gap-1.5">
+                <TabsTrigger
+                  value="wallet"
+                  className="gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
+                >
                   <Wallet className="h-4 w-4" />
-                  My positions
+                  Read Wallet
                 </TabsTrigger>
               </TabsList>
               <TabsContent value="simulate">
@@ -956,7 +983,6 @@ export function DlmmSimulator() {
                     strategy={params.strategy}
                     onCurrentPriceChange={handleCurrentPriceChange}
                     onInitialPriceChange={handleInitialPriceChange}
-                    lockInitialPrice
                     initialPriceLabel="Pool Price"
                   />
                 ) : (

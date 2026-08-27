@@ -23,7 +23,6 @@ interface LiquidityChartProps {
    strategy: Strategy;
    onCurrentPriceChange: (price: number) => void;
    onInitialPriceChange: (price: number) => void;
-   lockInitialPrice?: boolean;
    initialPriceLabel?: string;
 }
 
@@ -78,7 +77,6 @@ export function LiquidityChart({
      strategy,
      onCurrentPriceChange,
      onInitialPriceChange,
-     lockInitialPrice = false,
      initialPriceLabel,
    }: LiquidityChartProps) {
      const { params, baseDecimals, quoteDecimals, applyDecimalAdjustment, tokenSymbols } = useDlmmContext();
@@ -254,10 +252,10 @@ export function LiquidityChart({
     if (isDraggingCurrent) {
       onCurrentPriceChange(snappedPrice);
     }
-    if (isDraggingInitial && !lockInitialPrice) {
+    if (isDraggingInitial) {
       onInitialPriceChange(snappedPrice);
     }
-  }, [isDraggingCurrent, isDraggingInitial, lockInitialPrice, percentageToPrice, findClosestBinPrice, onCurrentPriceChange, onInitialPriceChange]);
+  }, [isDraggingCurrent, isDraggingInitial, percentageToPrice, findClosestBinPrice, onCurrentPriceChange, onInitialPriceChange]);
   
   const handleMouseUp = useCallback(() => {
     setIsDraggingCurrent(false);
@@ -485,23 +483,26 @@ export function LiquidityChart({
           )}
           <div className="absolute h-2 top-1/2 -translate-y-1/2 w-full bg-gradient-to-r from-secondary/50 via-secondary to-secondary/50 rounded-full shadow-inner" />
           <div
-            className={`absolute top-1/2 w-5 h-5 bg-gradient-to-br from-primary to-purple-500 rounded-full border-2 border-background shadow-lg ${
-              lockInitialPrice ? 'cursor-default opacity-80' : 'cursor-pointer hover:scale-110 hover:shadow-xl'
-            }`}
+            className="absolute top-1/2 z-10 flex h-8 w-8 -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center"
             style={{
               left: `${initialPricePosition}%`,
-              transform: 'translate(-50%, -50%)',
               touchAction: 'none' as const,
-              boxShadow: isDraggingInitial && !lockInitialPrice
-                ? '0 0 20px rgba(66, 153, 225, 0.8), 0 0 40px rgba(139, 92, 246, 0.4)'
-                : '0 4px 10px rgba(66, 153, 225, 0.3)'
             }}
             onPointerDown={(e) => {
-              if (lockInitialPrice) return;
               e.preventDefault();
+              e.stopPropagation();
               setIsDraggingInitial(true);
             }}
-          />
+          >
+            <div
+              className="h-5 w-5 rounded-full border-2 border-background bg-gradient-to-br from-primary to-purple-500 shadow-lg hover:scale-110 hover:shadow-xl"
+              style={{
+                boxShadow: isDraggingInitial
+                  ? '0 0 20px rgba(66, 153, 225, 0.8), 0 0 40px rgba(139, 92, 246, 0.4)'
+                  : '0 4px 10px rgba(66, 153, 225, 0.3)'
+              }}
+            />
+          </div>
           <div className="absolute top-full text-center mt-1" style={{left: `${initialPricePosition}%`, transform: 'translateX(-50%)'}}>
             <span className="text-xs text-muted-foreground font-medium">
               {initialPriceLabel ?? 'Initial Price'}: <span className="text-primary font-bold"><FormattedNumber value={initialPrice} maximumFractionDigits={4} /></span>
