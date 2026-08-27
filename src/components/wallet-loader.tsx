@@ -205,7 +205,7 @@ export function WalletLoader({
       )}
 
       {!isLoading && portfolio && portfolio.pairs.length > 0 && (
-        <div className="space-y-3">
+        <div className="w-full max-w-2xl space-y-3">
           <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
             <span>
               {shortenAddress(portfolio.wallet, 6)} · {portfolio.totalPositions} open {portfolio.totalPositions === 1 ? 'position' : 'positions'}

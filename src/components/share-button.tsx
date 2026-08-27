@@ -6,17 +6,28 @@ import { Share2 } from "lucide-react";
 import { useState, useMemo, useEffect } from "react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import type { MeteoraPair } from "@/lib/meteora-api";
+import type { SimulatedTransaction } from "@/lib/position-transactions";
+import { buildShareUrl } from "@/lib/share-state";
 
 interface ShareButtonProps {
   currentPrice: number | '';
   initialPrice: number | '';
   selectedPool: MeteoraPair | null;
   wallet?: string | null;
+  transactions?: SimulatedTransaction[];
   disabled?: boolean;
   compact?: boolean;
 }
 
-export function ShareButton({ currentPrice, initialPrice, selectedPool, wallet, disabled = false, compact = false }: ShareButtonProps) {
+export function ShareButton({
+  currentPrice,
+  initialPrice,
+  selectedPool,
+  wallet,
+  transactions = [],
+  disabled = false,
+  compact = false,
+}: ShareButtonProps) {
   const { toast } = useToast();
 
   const [baseUrl, setBaseUrl] = useState('');
@@ -27,23 +38,14 @@ export function ShareButton({ currentPrice, initialPrice, selectedPool, wallet, 
 
   const shareUrl = useMemo(() => {
     if (!baseUrl) return '';
-    const searchParams = new URLSearchParams();
-
-    if (selectedPool) {
-      searchParams.set('pool', selectedPool.address);
-    }
-
-    if (wallet) {
-      searchParams.set('wallet', wallet);
-    }
-
-    if (currentPrice !== '' && currentPrice !== initialPrice) {
-      searchParams.set('currentPrice', currentPrice.toString());
-    }
-
-    const queryString = searchParams.toString();
-    return queryString ? `${baseUrl}?${queryString}` : baseUrl;
-  }, [currentPrice, initialPrice, selectedPool, wallet, baseUrl]);
+    return buildShareUrl(baseUrl, {
+      poolAddress: selectedPool?.address,
+      wallet,
+      currentPrice,
+      initialPrice,
+      transactions,
+    });
+  }, [baseUrl, currentPrice, initialPrice, selectedPool, wallet, transactions]);
 
   const handleShare = async () => {
     try {

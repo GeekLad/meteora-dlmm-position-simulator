@@ -1,13 +1,13 @@
 
 "use client";
 
-import { useState, useMemo, useEffect, createContext, useContext, type ReactNode } from "react";
+import { useState, useMemo, useEffect, useRef, createContext, useContext, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { getInitialBins, runSimulation, getIdFromPrice, getPriceFromId, type SimulationParams, type Analysis, type SimulatedBin, type Strategy } from "@/lib/dlmm";
 import { LiquidityChart } from "@/components/liquidity-chart";
 import { Logo } from "@/components/icons";
-import { BarChart3, RefreshCcw, ExternalLink, Wallet, FlaskConical, Loader2 } from "lucide-react";
+import { BarChart3, ExternalLink, Wallet, FlaskConical, Loader2, Undo2 } from "lucide-react";
 import { formatNumberForDisplay } from "@/lib/display-formatting";
 import { Button } from "./ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
@@ -18,9 +18,11 @@ import { ShareButton } from '@/components/share-button';
 import { ThemeToggle } from "@/components/theme-toggle";
 import { MobileSectionNav, type MobileSection } from "@/components/mobile-section-nav";
 import { cn } from "@/lib/utils";
-import { MeteoraPair, parseTokenSymbols } from "@/lib/meteora-api";
+import { fetchPoolByAddress, MeteoraPair, parseTokenSymbols } from "@/lib/meteora-api";
 import { reverseEngineerDecimals } from "@/lib/dlmm-sdk-wrapper";
 import {
+  fetchOpenPortfolio,
+  isValidSolanaAddress,
   loadPoolSimulation,
   reconstructCombinedBins,
   type PairGroup,
@@ -41,6 +43,7 @@ import {
   simulatedPositionDetail,
   type SimulatedTransaction,
 } from "@/lib/position-transactions";
+import { hasShareOverlay, hasShareTarget, parseShareSearchParams } from "@/lib/share-state";
 
 type PartialSimulationParams = Omit<SimulationParams, 'strategy' | 'binStep' | 'initialPrice' | 'baseAmount' | 'quoteAmount' | 'lowerPrice' | 'upperPrice'> & {
   strategy: Strategy;
@@ -142,6 +145,14 @@ export function DlmmSimulator() {
   const [changeFocus, setChangeFocus] = useState<ChangeFocus | null>(null);
   const [mobileSection, setMobileSection] = useState<MobileSection>('position');
   const searchParams = useSearchParams();
+  const shareFromUrl = useMemo(() => parseShareSearchParams(searchParams), [searchParams]);
+  const pendingShareRef = useRef(shareFromUrl);
+  const shareOverlayAppliedRef = useRef(false);
+  const shareHydrateStartedRef = useRef(false);
+  const shareCancelledRef = useRef(false);
+  const shareBootstrapDoneRef = useRef(false);
+  const [shareHydrating, setShareHydrating] = useState(() => hasShareTarget(shareFromUrl));
+  const [shareHydrateError, setShareHydrateError] = useState<string | null>(null);
 
   const simulationParams = useMemo(() => {
     const allParamsSet =
@@ -260,28 +271,32 @@ export function DlmmSimulator() {
     }
   }, [params.initialPrice, currentPrice]);
 
-  // Parse URL parameters on mount
   useEffect(() => {
-    const pool = searchParams.get('pool');
-    if (pool) {
-      setInitialPoolAddress(pool);
-    }
+    pendingShareRef.current = shareFromUrl;
+  }, [shareFromUrl]);
 
-    const wallet = searchParams.get('wallet');
-    if (wallet) {
-      setInitialWallet(wallet);
-      setWalletAddress(wallet);
-      setSourceTab('wallet');
-    }
+  const applyShareOverlay = (poolAddress: string) => {
+    const share = pendingShareRef.current;
+    if (shareOverlayAppliedRef.current) return;
+    if (share.pool && share.pool !== poolAddress) return;
+    if (!hasShareOverlay(share)) return;
 
-    const currentPriceStr = searchParams.get('currentPrice');
-    if (currentPriceStr) {
-      const num = parseFloat(currentPriceStr);
-      if (!isNaN(num) && num > 0) {
-        setCurrentPrice(num);
-      }
+    shareOverlayAppliedRef.current = true;
+    if (share.initialPrice != null) {
+      setParams(prev => (
+        prev.initialPrice === share.initialPrice
+          ? prev
+          : { ...prev, initialPrice: share.initialPrice as number }
+      ));
     }
-  }, [searchParams]);
+    const overlayPrice = share.currentPrice ?? share.initialPrice;
+    if (overlayPrice != null) {
+      setCurrentPrice(overlayPrice);
+    }
+    if (share.transactions.length) {
+      setSimulatedTxs(share.transactions);
+    }
+  };
 
   const handleClear = () => {
     setParams(defaultParams);
@@ -308,6 +323,10 @@ export function DlmmSimulator() {
     setInitialWallet(null);
     setInitialPoolAddress(null);
     setMobileSection('position');
+    setShareHydrateError(null);
+    shareCancelledRef.current = true;
+    shareBootstrapDoneRef.current = false;
+    setShareHydrating(false);
     setClearKey(prev => prev + 1);
   };
   
@@ -405,7 +424,9 @@ export function DlmmSimulator() {
     setOriginalWalletPositions([]);
     setOriginalPositionBins({});
     setOriginalInitialPrice(null);
-    setSimulatedTxs([]);
+    if (!shareOverlayAppliedRef.current) {
+      setSimulatedTxs([]);
+    }
     setChangeFocus(null);
     setWalletPair(null);
     setWalletPoolError(null);
@@ -486,13 +507,14 @@ export function DlmmSimulator() {
 
     // Update current price to match the pool
     setCurrentPrice(exactBinPrice);
+    applyShareOverlay(pool.address);
   };
 
   const handleWalletPoolSelect = async (payload: {
     wallet: string;
     pair: PairGroup;
     pool: WalletPoolSummary;
-  }) => {
+  }): Promise<string | null> => {
     setWalletAddress(payload.wallet);
     setWalletPair(payload.pair);
     setWalletPoolError(null);
@@ -566,7 +588,9 @@ export function DlmmSimulator() {
       setOriginalWalletPositions(loaded.positions);
       setOriginalPositionBins(loaded.positionBins);
       setOriginalInitialPrice(exactBinPrice);
-      setSimulatedTxs([]);
+      if (!shareOverlayAppliedRef.current) {
+        setSimulatedTxs([]);
+      }
       setWalletBins(bins.length ? bins : loaded.bins);
       setMobileSection('analysis');
       setParams({
@@ -579,6 +603,8 @@ export function DlmmSimulator() {
         upperPrice: loaded.combinedUpperPrice || (bins[bins.length - 1]?.price ?? exactBinPrice),
       });
       setCurrentPrice(exactBinPrice);
+      applyShareOverlay(pool.address);
+      return null;
     } catch (error) {
       setWalletBins(null);
       setWalletPositions([]);
@@ -586,11 +612,127 @@ export function DlmmSimulator() {
       setOriginalPositionBins({});
       setOriginalInitialPrice(null);
       setSimulatedTxs([]);
-      setWalletPoolError(error instanceof Error ? error.message : 'Failed to load pool positions');
+      const message = error instanceof Error ? error.message : 'Failed to load pool positions';
+      setWalletPoolError(message);
+      return message;
     } finally {
       setIsLoadingWalletPool(false);
     }
   };
+
+  const handlePoolSelectRef = useRef(handlePoolSelect);
+  const handleWalletPoolSelectRef = useRef(handleWalletPoolSelect);
+  handlePoolSelectRef.current = handlePoolSelect;
+  handleWalletPoolSelectRef.current = handleWalletPoolSelect;
+
+  useEffect(() => {
+    if (shareHydrateStartedRef.current || shareCancelledRef.current) return;
+    if (hasShareTarget(shareFromUrl)) {
+      setShareHydrating(true);
+    }
+  }, [shareFromUrl]);
+
+  useEffect(() => {
+    if (!shareHydrating || shareHydrateStartedRef.current || shareCancelledRef.current) return;
+    shareHydrateStartedRef.current = true;
+    const share = shareFromUrl;
+
+    async function hydrateShare() {
+      try {
+        if (share.wallet) {
+          if (!isValidSolanaAddress(share.wallet)) {
+            throw new Error('Enter a valid Solana wallet address.');
+          }
+          const portfolio = await fetchOpenPortfolio(share.wallet);
+          if (shareCancelledRef.current) return;
+          if (portfolio.pairs.length === 0) {
+            throw new Error('No open DLMM positions found for this wallet.');
+          }
+
+          let match: { pair: PairGroup; pool: WalletPoolSummary } | null = null;
+          if (share.pool) {
+            for (const pair of portfolio.pairs) {
+              const pool = pair.pools.find(item => item.poolAddress === share.pool);
+              if (pool) {
+                match = { pair, pool };
+                break;
+              }
+            }
+            if (!match) {
+              throw new Error('Shared pool not found in this wallet.');
+            }
+          } else if (portfolio.pairs.length === 1 && portfolio.pairs[0].pools.length === 1) {
+            match = { pair: portfolio.pairs[0], pool: portfolio.pairs[0].pools[0] };
+          }
+
+          if (!match) {
+            setInitialWallet(share.wallet);
+            setWalletAddress(share.wallet);
+            setSourceTab('wallet');
+            setShareHydrating(false);
+            return;
+          }
+
+          const error = await handleWalletPoolSelectRef.current({
+            wallet: share.wallet,
+            pair: match.pair,
+            pool: match.pool,
+          });
+          if (shareCancelledRef.current) return;
+          if (error) {
+            setInitialWallet(share.wallet);
+            setWalletAddress(share.wallet);
+            setSourceTab('wallet');
+            setShareHydrateError(error);
+            setShareHydrating(false);
+            return;
+          }
+          shareBootstrapDoneRef.current = true;
+          return;
+        }
+
+        if (share.pool) {
+          const pool = await fetchPoolByAddress(share.pool);
+          if (shareCancelledRef.current) return;
+          if (!pool) {
+            throw new Error('Could not load the shared pool.');
+          }
+          handlePoolSelectRef.current(pool);
+          shareBootstrapDoneRef.current = true;
+        }
+      } catch (error) {
+        if (shareCancelledRef.current) return;
+        const message = error instanceof Error ? error.message : 'Failed to load shared simulation';
+        setShareHydrateError(message);
+        if (share.wallet) {
+          setInitialWallet(share.wallet);
+          setWalletAddress(share.wallet);
+          setSourceTab('wallet');
+        } else if (share.pool) {
+          setInitialPoolAddress(share.pool);
+          setSourceTab('simulate');
+        }
+        setShareHydrating(false);
+      }
+    }
+
+    void hydrateShare();
+  }, [shareHydrating, shareFromUrl]);
+
+  useEffect(() => {
+    if (!shareHydrating || !shareBootstrapDoneRef.current) return;
+    if (isLoadingWalletPool) return;
+
+    const share = pendingShareRef.current;
+    const expectsChart = !!(share.wallet || share.transactions.length);
+    if (expectsChart) {
+      if (!selectedPool || !simulation || !simulationParams) return;
+    } else if (share.pool && !selectedPool) {
+      return;
+    }
+
+    setShareHydrating(false);
+  }, [shareHydrating, selectedPool, simulation, simulationParams, isLoadingWalletPool]);
 
   const canStackPositions =
     !!selectedPool
@@ -746,31 +888,33 @@ export function DlmmSimulator() {
   }, [currentPrice, params.initialPrice]);
 
 
+  const showSimulation = !!selectedPool && !shareHydrating;
+
   return (
     <DlmmContext.Provider value={{params, baseDecimals, quoteDecimals, applyDecimalAdjustment, tokenSymbols}}>
-    <div className={cn("flex flex-col", selectedPool ? "gap-2 pb-20 lg:gap-8 lg:pb-0" : "gap-4 lg:gap-8")}>
+    <div className={cn("flex flex-col", showSimulation ? "gap-2 pb-20 lg:gap-8 lg:pb-0" : "gap-4 lg:gap-8")}>
       <header
         className={cn(
           "flex items-center justify-between rounded-2xl bg-gradient-to-r from-primary/10 via-purple-500/10 to-primary/10 border border-primary/20 backdrop-blur-sm",
-          selectedPool
+          showSimulation
             ? "gap-2 p-2 sm:p-3 lg:p-6"
             : "gap-4 p-4 sm:p-6"
         )}
       >
         <div className="flex min-w-0 items-center gap-2 lg:gap-3">
-          <div className={cn("rounded-xl bg-primary/20 backdrop-blur-sm", selectedPool ? "p-1.5 lg:p-2" : "p-2")}>
-            <Logo className={cn("text-primary", selectedPool ? "h-6 w-6 lg:h-8 lg:w-8" : "h-8 w-8")} />
+          <div className={cn("rounded-xl bg-primary/20 backdrop-blur-sm", showSimulation ? "p-1.5 lg:p-2" : "p-2")}>
+            <Logo className={cn("text-primary", showSimulation ? "h-6 w-6 lg:h-8 lg:w-8" : "h-8 w-8")} />
           </div>
           <div className="min-w-0">
             <h1
               className={cn(
                 "font-bold tracking-tight bg-gradient-to-r from-primary via-purple-400 to-primary bg-clip-text text-transparent",
-                selectedPool ? "hidden lg:block text-3xl" : "text-xl sm:text-3xl"
+                showSimulation ? "hidden lg:block text-3xl" : "text-xl sm:text-3xl"
               )}
             >
               Meteora DLMM Position Simulator v2
             </h1>
-            {selectedPool ? (
+            {showSimulation && selectedPool ? (
               <p className="truncate text-sm font-semibold lg:mt-1 lg:font-normal lg:text-muted-foreground">
                 {selectedPool.name}
                 {params.binStep ? ` · ${params.binStep} bin step` : ''}
@@ -781,13 +925,14 @@ export function DlmmSimulator() {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5 lg:gap-2">
-          {selectedPool && (
+          {showSimulation && (
             <>
               <ShareButton
                 currentPrice={currentPrice}
                 initialPrice={params.initialPrice}
                 selectedPool={selectedPool}
                 wallet={walletAddress}
+                transactions={simulatedTxs}
                 compact
               />
               <Button
@@ -795,19 +940,28 @@ export function DlmmSimulator() {
                 size="sm"
                 onClick={handleClear}
                 className="h-8 w-8 px-0 hover:bg-primary/10 transition-all duration-300 lg:h-9 lg:w-auto lg:px-3"
-                aria-label="Clear all"
+                aria-label="Reset"
               >
-                <RefreshCcw className="h-4 w-4 lg:mr-2" />
-                <span className="hidden lg:inline">Clear All</span>
+                <Undo2 className="h-4 w-4 lg:mr-2" />
+                <span className="hidden lg:inline">Reset</span>
               </Button>
             </>
           )}
-          <ThemeToggle className={selectedPool ? "h-8 w-8" : undefined} />
+          <ThemeToggle className={showSimulation ? "h-8 w-8" : undefined} />
         </div>
       </header>
 
-      {!selectedPool && (
-        <Card className="border-primary/20 bg-card/50 backdrop-blur-sm hover:border-primary/40 transition-all duration-300">
+      {shareHydrating && (
+        <Card className="w-full max-w-2xl border-primary/20 bg-card/50 backdrop-blur-sm">
+          <CardContent className="flex flex-col items-center justify-center gap-3 py-16">
+            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            <p className="text-sm text-muted-foreground">Loading shared simulation…</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {!shareHydrating && !selectedPool && (
+        <Card className="w-full max-w-2xl border-primary/20 bg-card/50 backdrop-blur-sm hover:border-primary/40 transition-all duration-300">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-lg">Load a Position</CardTitle>
             <CardDescription>
@@ -815,6 +969,11 @@ export function DlmmSimulator() {
             </CardDescription>
           </CardHeader>
           <CardContent>
+            {shareHydrateError && (
+              <div className="mb-4 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+                {shareHydrateError}
+              </div>
+            )}
             <Tabs
               value={sourceTab}
               onValueChange={(value) => setSourceTab(value as 'simulate' | 'wallet')}
@@ -842,7 +1001,7 @@ export function DlmmSimulator() {
                 <WalletLoader
                   key={`wallet-${clearKey}`}
                   onSelectPool={handleWalletPoolSelect}
-                  selectedPoolAddress={walletBins ? selectedPool?.address : null}
+                  selectedPoolAddress={null}
                   initialWallet={initialWallet}
                   initialPoolAddress={sourceTab === 'wallet' ? initialPoolAddress : null}
                   disabled={isLoadingWalletPool}
@@ -864,7 +1023,7 @@ export function DlmmSimulator() {
         </Card>
       )}
 
-      {selectedPool && (
+      {showSimulation && (
       <div className={cn("grid grid-cols-1 gap-6", hasPosition && "lg:grid-cols-3")}>
         <div className={cn(
           "flex flex-col gap-6",
@@ -1033,7 +1192,7 @@ export function DlmmSimulator() {
         </div>
       </div>
       )}
-      {selectedPool && (
+      {showSimulation && (
         <MobileSectionNav
           value={mobileSection}
           onChange={handleMobileSectionChange}

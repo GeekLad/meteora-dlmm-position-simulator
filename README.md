@@ -1,65 +1,63 @@
-# Meteora DLMM Position Simulator
+# Meteora DLMM Position Simulator v2
 
 Try it live at [https://dlmmsim.xyz](https://dlmmsim.xyz)
 
-![Meteora DLMM Position Simulator Animated Demo](public/screenshots/dlmm-simulator-demo.webp)
+![Meteora DLMM Position Simulator v2](public/screenshots/dlmm-simulator-demo.webp)
 
-The Meteora DLMM Position Simulator is very simple to use. Just fill in the
-input fields to the left, according to the position you wish to simulate. The
-liquidity distribution display allows you to drag the current price to the left
-and right, to simulate what will happen to the position value when the price
-changes. This is a great tool for beginners to see how price will affect the
-total value of their liquidity as the price moves up and down.
+Version 2 is a position workshop on top of the original price simulator. Start from a live Meteora DLMM pool or from a wallet's open liquidity, then add, remove, and stack positions while you move price through the bins. The chart and analysis update as tokens convert between base and quote, so you can see how range, strategy, and price path change position value. On a phone, Positions and Analysis are separate tabs.
 
 ## Features
 
-### Load Open Positions from a Wallet
-
-Paste a Solana wallet address to load every open DLMM position into the simulator.
-
-Positions are grouped by trading pair (for example SOL-USDC). Drill into a pair to see the individual pools you have liquidity in — you can have several pools for the same pair with different bin steps and fees — then open a pool to simulate **all of its positions combined**. If a pair only has one pool, that simulation opens automatically. Drag the current price to see how the combined position value, token mix, and profit/loss change.
-
-![Load Wallet Positions](public/screenshots/wallet-positions.png)
-
-![Combined Wallet Simulation](public/screenshots/wallet-simulation.png)
-
-The share URL can include `?wallet=<address>` (and optionally `&pool=<poolAddress>`) so you can send someone a loaded portfolio.
-
 ### Search Live Pools
 
-Search and select from live Meteora DLMM pools to instantly load real market
-data into the simulator. This allows you to simulate positions based on actual
-pool configurations and current market conditions.
+On the **New position** tab, search live Meteora DLMM pools by token symbol, mint, or pool address. Filter by bin step, then pick a pool to load its current price, token names, and decimals into the simulator.
 
-![Search Meteora Pools](public/screenshots/search-pools.png)
+![Search Meteora Pools](public/screenshots/search-pools.webp)
 
-### Autofill Balanced Positions
+### Load Open Positions from a Wallet
 
-Create balanced positions effortlessly by entering the amount for just one
-token. The simulator automatically calculates the corresponding amount for the
-other token based on your selected price range and distribution strategy.
+Switch to **Read Wallet**, paste a Solana address, and load every open DLMM position. Positions are grouped by trading pair (for example SOL-USDC). Open a pair to see the pools you have liquidity in — the same pair can have several pools with different bin steps and fees — then simulate **all of that pool's positions combined**. If a pair only has one pool, that simulation opens automatically.
 
-![Autofill Token Amounts](public/screenshots/autofill-tokens.webp)
+![Load Wallet Positions](public/screenshots/wallet-positions.webp)
+
+![Combined Wallet Simulation](public/screenshots/wallet-loaded.webp)
+
+Share URLs include the pool, wallet (when loaded), simulated price, and any simulated positions or liquidity changes. On-chain wallet positions are not baked into the link — they are read from current chain data when the link is opened.
+
+### Create Positions with a Range Editor
+
+After a pool is selected, the Meteora-style range editor sets min and max price, bin count, and distribution strategy (**Spot**, **Bid-Ask**, or **Curve**). Drag the range handles, step bins with +/−, or type prices and percents. New liquidity is shaped at the simulated current price: one-sided quote sits at or below that price, one-sided base at or above.
+
+Turn on **Auto-Fill** and enter the amount for one token. The other amount is calculated from the range, strategy, and current price so the deposit stays balanced.
+
+![Create a Position with Autofill](public/screenshots/autofill-tokens.webp)
+
+### Add, Remove, and Stack Liquidity
+
+Each position in the list can add liquidity, remove liquidity, or — for simulated positions — be edited or deleted. **New** opens another position on the same pool so you can stack ranges. Wallet loads also offer **Restore original** to undo simulated transactions.
+
+![Position Management](public/screenshots/position-management.webp)
+
+Removals can target a bin range, not only a percent of the whole position. Drag the highlighted span, pick 50% or 100%, or use the slider. The preview shows exactly which tokens come out.
+
+![Ranged Liquidity Removal](public/screenshots/remove-liquidity.webp)
+
+A **simulated transaction log** records every add, remove, and new position so you can edit or drop individual steps.
 
 ### Interactive Price Simulation
 
-Move the current price slider to see real-time updates on how price movements
-will affect your position value. Watch as tokens convert between base and quote
-across different price bins, and see instant profit/loss calculations.
+Drag the pool-price handle, or use the **Price shock** shortcuts (−25% through +25%) to jump. Bins convert between base and quote as price crosses them. Analysis shows initial vs current value, profit/loss, token balances, price change, and average price paid or sold.
 
 ![Price Slider Simulation](public/screenshots/price-slider.webp)
 
 ### Share Position Strategies
 
-Share your position configurations and strategies with others through shareable
-links. Perfect for discussing strategies, teaching, or collaborating on
-liquidity provision approaches.
+Copy a shareable link for the current simulation: pool, price, and every simulated position or liquidity change. Wallet links re-load live on-chain positions, then replay the simulated overlay on top. Useful for comparing strategies or walking someone through a setup.
 
 ![Share Positions](public/screenshots/share-positions.png)
 
-### Light Mode / Dark Mode Toggle
+### Light Mode / Dark Mode
 
-Switch between light and dark themes to match your preference and reduce eye
-strain during extended analysis sessions.
+Toggle between light and dark themes from the header.
 
-![Theme Toggle](public/screenshots/theme-toggle.png)
+![Light Mode](public/screenshots/theme-light.webp)

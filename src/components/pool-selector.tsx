@@ -171,7 +171,7 @@ export function PoolSelector({ onSelectPool, selectedPool, initialPoolAddress }:
           )}
 
           {/* Pool list */}
-          <div className="max-h-[400px] space-y-2 overflow-y-auto rounded-lg border p-2">
+          <div className="max-h-[400px] w-full max-w-2xl space-y-2 overflow-y-auto rounded-lg border p-2">
             {/* No results - still loading */}
             {filteredPairs.length === 0 && debouncedSearchTerm && loadingStatus.isLoading && (
               <div className="py-8 text-center">
