@@ -8,7 +8,7 @@
 import type { DlmmInstruction } from '@geeklad/meteora-dlmm-liquidity-tx-parser';
 
 /** Increment to force every client to refetch and reparse history. */
-export const HISTORY_CACHE_VERSION = 2;
+export const HISTORY_CACHE_VERSION = 3;
 
 const DB_NAME = 'dlmm-position-tx-cache';
 const STORE = 'parsed-txs';

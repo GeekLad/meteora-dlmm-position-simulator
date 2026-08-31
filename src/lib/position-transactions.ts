@@ -23,6 +23,39 @@ export type LiquidityTxSource = 'historical' | 'simulated';
  * simulations. Historical and simulated txs share this shape so they stack,
  * ledger, and render uniformly.
  */
+/** Explicit per-bin distribution from weight / bin-list instructions. */
+export interface LiquidityBinSpec {
+  /** Simulator-space bin id (on-chain id + offset). */
+  binId: number;
+  weight?: number;
+  /** UI-decimal amounts when the instruction carries them. */
+  baseAmount?: number;
+  quoteAmount?: number;
+  bps?: number;
+}
+
+/**
+ * Rebalance add segment (from parser `rebalance.adds`).
+ * `x0`/`y0`/`delta_*` are liquidity-shape parameters used as relative weights,
+ * then normalized to the tx's `baseAmount` / `quoteAmount`.
+ */
+export interface RebalanceAddSpec {
+  minDeltaId: number;
+  maxDeltaId: number;
+  x0: number;
+  y0: number;
+  deltaX: number;
+  deltaY: number;
+  favorXInActiveId: boolean;
+  bitFlag: number;
+}
+
+export interface RebalanceRemoveSpec {
+  minBinId?: number;
+  maxBinId?: number;
+  bps: number;
+}
+
 export interface SimulatedTransaction {
   id: string;
   type: SimulatedTxType;
@@ -41,6 +74,12 @@ export interface SimulatedTransaction {
   slot?: number;
   /** Unix ms or ISO string. */
   timestamp?: number | string;
+  /** Explicit per-bin list from weight / bin-list instructions. */
+  bins?: LiquidityBinSpec[];
+  /** Rebalance add segments that define the deposit shape. */
+  rebalanceAdds?: RebalanceAddSpec[];
+  /** Rebalance remove segments (bps over a bin range). */
+  rebalanceRemoves?: RebalanceRemoveSpec[];
 }
 
 export function isHistoricalTx(tx: SimulatedTransaction): boolean {
@@ -1127,6 +1166,222 @@ function addDepositBins(
   });
 }
 
+function scaleBinsByBps(bins: SimulatedBin[], minBinId: number, maxBinId: number, bps: number): SimulatedBin[] {
+  const factor = Math.max(0, 1 - Math.min(10000, Math.max(0, bps)) / 10000);
+  if (factor >= 1) return bins;
+  return bins.map(bin => {
+    if (bin.id < minBinId || bin.id > maxBinId) return bin;
+    return {
+      ...bin,
+      initialAmount: bin.initialAmount * factor,
+      initialValueInQuote: bin.initialValueInQuote * factor,
+      initialDisplayValue: bin.initialDisplayValue * factor,
+      currentAmount: bin.currentAmount * factor,
+      currentValueInQuote: bin.currentValueInQuote * factor,
+    };
+  });
+}
+
+function makeTokenBin(
+  binId: number,
+  price: number,
+  activeBinId: number,
+  baseAmount: number,
+  quoteAmount: number,
+  replay: ReplayOptions
+): SimulatedBin {
+  const onQuoteSide = binId <= activeBinId;
+  const tokenType: 'base' | 'quote' = onQuoteSide ? 'quote' : 'base';
+  const amount = onQuoteSide ? quoteAmount : baseAmount;
+  const valueInQuote = onQuoteSide ? quoteAmount : baseAmount * (price > 0 ? price : 0);
+  const decimalAdjustment = replay.quoteDecimals - replay.baseDecimals;
+  const pricePerLamport = price * Math.pow(10, decimalAdjustment);
+  return {
+    id: binId,
+    price,
+    pricePerLamport,
+    initialTokenType: tokenType,
+    initialAmount: amount,
+    initialValueInQuote: valueInQuote,
+    initialDisplayValue: onQuoteSide ? quoteAmount : baseAmount * price,
+    currentTokenType: tokenType,
+    currentAmount: amount,
+    currentValueInQuote: valueInQuote,
+  };
+}
+
+/**
+ * Build deposit bins from rebalance add segments. x0/y0/delta_* act as relative
+ * weights; results are normalized to the tx's total base/quote amounts.
+ */
+function binsFromRebalanceAdds(
+  adds: RebalanceAddSpec[],
+  activeBinId: number,
+  baseAmount: number,
+  quoteAmount: number,
+  replay: ReplayOptions
+): SimulatedBin[] {
+  const baseWeights = new Map<number, number>();
+  const quoteWeights = new Map<number, number>();
+
+  for (const add of adds) {
+    const minBinId = activeBinId + add.minDeltaId;
+    const maxBinId = activeBinId + add.maxDeltaId;
+    for (let binId = minBinId; binId <= maxBinId; binId++) {
+      const price = getPriceFromId(
+        binId,
+        replay.binStep,
+        replay.baseDecimals,
+        replay.quoteDecimals,
+        replay.applyDecimalAdjustment
+      );
+      const onQuoteSide = add.favorXInActiveId
+        ? binId < activeBinId
+        : binId <= activeBinId;
+      if (onQuoteSide) {
+        const weight = Math.max(0, add.y0 + add.deltaY * (activeBinId - binId));
+        quoteWeights.set(binId, (quoteWeights.get(binId) ?? 0) + weight);
+      } else {
+        // Use delta as a relative weight (SDK also scales by inverse price for X;
+        // we normalize to total baseAmount afterward).
+        const weight = Math.max(0, add.x0 + add.deltaX * (binId - activeBinId));
+        baseWeights.set(binId, (baseWeights.get(binId) ?? 0) + weight * Math.max(price, 1e-18));
+      }
+    }
+  }
+
+  const totalBaseWeight = [...baseWeights.values()].reduce((sum, w) => sum + w, 0);
+  const totalQuoteWeight = [...quoteWeights.values()].reduce((sum, w) => sum + w, 0);
+  const binIds = [...new Set([...baseWeights.keys(), ...quoteWeights.keys()])].sort((a, b) => a - b);
+  if (binIds.length === 0) return [];
+
+  // If weights collapsed to zero (e.g. all-zero params), fall back to strategy shape.
+  if (totalBaseWeight <= 0 && totalQuoteWeight <= 0) return [];
+
+  const result: SimulatedBin[] = [];
+  for (const binId of binIds) {
+    const price = getPriceFromId(
+      binId,
+      replay.binStep,
+      replay.baseDecimals,
+      replay.quoteDecimals,
+      replay.applyDecimalAdjustment
+    );
+    const base = totalBaseWeight > 0 && baseAmount > 0
+      ? baseAmount * ((baseWeights.get(binId) ?? 0) / totalBaseWeight)
+      : 0;
+    const quote = totalQuoteWeight > 0 && quoteAmount > 0
+      ? quoteAmount * ((quoteWeights.get(binId) ?? 0) / totalQuoteWeight)
+      : 0;
+    if (base <= 0 && quote <= 0) continue;
+    result.push(makeTokenBin(binId, price, activeBinId, base, quote, replay));
+  }
+  return result;
+}
+
+function binsFromExplicitSpecs(
+  specs: LiquidityBinSpec[],
+  activeBinId: number,
+  baseAmount: number,
+  quoteAmount: number,
+  replay: ReplayOptions
+): SimulatedBin[] {
+  if (specs.length === 0) return [];
+  const hasAmounts = specs.some(spec => (spec.baseAmount ?? 0) > 0 || (spec.quoteAmount ?? 0) > 0);
+  const hasWeights = specs.some(spec => (spec.weight ?? 0) > 0);
+
+  if (hasAmounts) {
+    return specs
+      .map(spec => {
+        const price = getPriceFromId(
+          spec.binId,
+          replay.binStep,
+          replay.baseDecimals,
+          replay.quoteDecimals,
+          replay.applyDecimalAdjustment
+        );
+        return makeTokenBin(
+          spec.binId,
+          price,
+          activeBinId,
+          spec.baseAmount ?? 0,
+          spec.quoteAmount ?? 0,
+          replay
+        );
+      })
+      .filter(bin => bin.initialAmount > 0);
+  }
+
+  if (!hasWeights) return [];
+  const quoteSpecs = specs.filter(spec => spec.binId <= activeBinId);
+  const baseSpecs = specs.filter(spec => spec.binId > activeBinId);
+  const totalQuoteWeight = quoteSpecs.reduce((sum, spec) => sum + (spec.weight ?? 0), 0);
+  const totalBaseWeight = baseSpecs.reduce((sum, spec) => sum + (spec.weight ?? 0), 0);
+  const result: SimulatedBin[] = [];
+  for (const spec of specs) {
+    const price = getPriceFromId(
+      spec.binId,
+      replay.binStep,
+      replay.baseDecimals,
+      replay.quoteDecimals,
+      replay.applyDecimalAdjustment
+    );
+    const weight = spec.weight ?? 0;
+    const base = spec.binId > activeBinId && totalBaseWeight > 0
+      ? baseAmount * (weight / totalBaseWeight)
+      : 0;
+    const quote = spec.binId <= activeBinId && totalQuoteWeight > 0
+      ? quoteAmount * (weight / totalQuoteWeight)
+      : 0;
+    if (base <= 0 && quote <= 0) continue;
+    result.push(makeTokenBin(spec.binId, price, activeBinId, base, quote, replay));
+  }
+  return result;
+}
+
+function binsForDepositTx(
+  tx: SimulatedTransaction,
+  activeBinId: number,
+  lowerBinId: number,
+  upperBinId: number,
+  replay: ReplayOptions
+): SimulatedBin[] {
+  if (tx.bins && tx.bins.length > 0) {
+    const explicit = binsFromExplicitSpecs(
+      tx.bins,
+      activeBinId,
+      tx.baseAmount,
+      tx.quoteAmount,
+      replay
+    );
+    if (explicit.length > 0) return explicit;
+  }
+
+  if (tx.rebalanceAdds && tx.rebalanceAdds.length > 0) {
+    const fromRebalance = binsFromRebalanceAdds(
+      tx.rebalanceAdds,
+      activeBinId,
+      tx.baseAmount,
+      tx.quoteAmount,
+      { ...replay, activeBinId }
+    );
+    if (fromRebalance.length > 0) return fromRebalance;
+  }
+
+  return getInitialBinsForBinRange({
+    binStep: replay.binStep,
+    minBinId: lowerBinId,
+    maxBinId: upperBinId,
+    activeBinId,
+    baseAmount: tx.baseAmount,
+    quoteAmount: tx.quoteAmount,
+    strategy: tx.strategy,
+    baseDecimals: replay.baseDecimals,
+    quoteDecimals: replay.quoteDecimals,
+    applyDecimalAdjustment: replay.applyDecimalAdjustment,
+  });
+}
+
 export interface StackLiquidityResult {
   slices: LiquiditySlice[];
   /** Same txs with removeBps filled for amount-based historical removals. */
@@ -1178,13 +1433,29 @@ export function stackLiquidityTransactions(
       let removeBps = tx.removeBps;
       if (existing.length > 0) {
         const before = binsToAmounts(existing, true);
-        const updated = removeTokensInRange(
-          existing,
-          minBinId,
-          maxBinId,
-          tx.baseAmount,
-          tx.quoteAmount
-        );
+        let updated = existing;
+        if (tx.rebalanceRemoves && tx.rebalanceRemoves.length > 0) {
+          for (const segment of tx.rebalanceRemoves) {
+            const segMin = segment.minBinId ?? minBinId;
+            const segMax = segment.maxBinId ?? maxBinId;
+            updated = scaleBinsByBps(updated, segMin, segMax, segment.bps);
+          }
+        } else if (tx.bins && tx.bins.some(bin => (bin.bps ?? 0) > 0)) {
+          for (const bin of tx.bins) {
+            if (!(bin.bps && bin.bps > 0)) continue;
+            updated = scaleBinsByBps(updated, bin.binId, bin.binId, bin.bps);
+          }
+        } else if (tx.removeBps > 0) {
+          updated = scaleBinsByBps(existing, minBinId, maxBinId, tx.removeBps);
+        } else {
+          updated = removeTokensInRange(
+            existing,
+            minBinId,
+            maxBinId,
+            tx.baseAmount,
+            tx.quoteAmount
+          );
+        }
         binsByPosition.set(positionAddress, updated);
         if (!(removeBps > 0) && before.value > 1e-12) {
           const after = binsToAmounts(updated, true);
@@ -1207,23 +1478,18 @@ export function stackLiquidityTransactions(
     const lowerBinId = Number.isFinite(minBinId) ? minBinId : hostMin;
     const upperBinId = Number.isFinite(maxBinId) ? maxBinId : hostMax;
 
-    if (!(upperBinId >= lowerBinId)) {
+    if (!(upperBinId >= lowerBinId) && !(tx.bins?.length) && !(tx.rebalanceAdds?.length)) {
       refined.push({ ...tx, source: tx.source ?? 'simulated' });
       continue;
     }
 
-    const deposit = getInitialBinsForBinRange({
-      binStep: replay.binStep,
-      minBinId: lowerBinId,
-      maxBinId: upperBinId,
+    const deposit = binsForDepositTx(
+      tx,
       activeBinId,
-      baseAmount: tx.baseAmount,
-      quoteAmount: tx.quoteAmount,
-      strategy: tx.strategy,
-      baseDecimals: replay.baseDecimals,
-      quoteDecimals: replay.quoteDecimals,
-      applyDecimalAdjustment: replay.applyDecimalAdjustment,
-    });
+      lowerBinId,
+      upperBinId,
+      { ...replay, activeBinId }
+    );
     const existing = binsByPosition.get(positionAddress) ?? [];
     binsByPosition.set(
       positionAddress,

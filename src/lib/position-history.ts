@@ -372,6 +372,29 @@ function stackPositionsSequentially(
       ? event.timestamp.getTime()
       : new Date(event.timestamp).getTime();
 
+    const bins = (ix.bins ?? []).map(bin => ({
+      binId: toSimulatorBinId(bin.bin_id),
+      weight: bin.weight,
+      baseAmount: bin.amount_x != null ? rawToUi(bin.amount_x, replay.baseDecimals) : undefined,
+      quoteAmount: bin.amount_y != null ? rawToUi(bin.amount_y, replay.quoteDecimals) : undefined,
+      bps: bin.bps,
+    }));
+    const rebalanceAdds = (ix.rebalance?.adds ?? []).map(add => ({
+      minDeltaId: add.min_delta_id,
+      maxDeltaId: add.max_delta_id,
+      x0: add.x0,
+      y0: add.y0,
+      deltaX: add.delta_x,
+      deltaY: add.delta_y,
+      favorXInActiveId: add.favor_x_in_active_id,
+      bitFlag: add.bit_flag,
+    }));
+    const rebalanceRemoves = (ix.rebalance?.removes ?? []).map(remove => ({
+      minBinId: remove.min_bin_id != null ? toSimulatorBinId(remove.min_bin_id) : undefined,
+      maxBinId: remove.max_bin_id != null ? toSimulatorBinId(remove.max_bin_id) : undefined,
+      bps: remove.bps,
+    }));
+
     if (ix.type === 'AddLiquidity') {
       const isFirst = !opened.has(positionAddress);
       txs.push({
@@ -389,27 +412,35 @@ function stackPositionsSequentially(
         signature: event.signature,
         slot: event.slot,
         timestamp,
+        bins: bins.length ? bins : undefined,
+        rebalanceAdds: rebalanceAdds.length ? rebalanceAdds : undefined,
       });
       opened.add(positionAddress);
       pendingRange.set(positionAddress, rangeFromIx);
       continue;
     }
 
+    const removeBpsFromSegments = rebalanceRemoves.length > 0
+      ? Math.max(...rebalanceRemoves.map(segment => segment.bps))
+      : (bins.find(bin => (bin.bps ?? 0) > 0)?.bps ?? 0);
+
     txs.push({
       id: `hist-${event.signature}-${txs.length}`,
       type: 'remove-liquidity',
       price: price || lowerPrice,
-      strategy: 'spot',
+      strategy: strategyFromParser(ix.strategy),
       baseAmount: amounts.base,
       quoteAmount: amounts.quote,
       lowerPrice,
       upperPrice,
       positionAddress,
-      removeBps: 0,
+      removeBps: removeBpsFromSegments,
       source: 'historical',
       signature: event.signature,
       slot: event.slot,
       timestamp,
+      bins: bins.length ? bins : undefined,
+      rebalanceRemoves: rebalanceRemoves.length ? rebalanceRemoves : undefined,
     });
   }
 
