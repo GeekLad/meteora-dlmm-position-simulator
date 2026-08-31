@@ -7,11 +7,7 @@
 
 import type { DlmmInstruction, DlmmStrategy } from '@geeklad/meteora-dlmm-liquidity-tx-parser';
 import {
-  getInitialBinsForBinRange,
   getPriceFromId,
-  mergeSimulatedBins,
-  runSimulation,
-  trimEmptyEdgeBins,
   type SimulatedBin,
   type Strategy,
 } from './dlmm';
@@ -25,6 +21,7 @@ import {
   replayTransactions,
   simulateSlices,
   slicesCostBasis,
+  stackLiquidityTransactions,
   type LiquiditySlice,
   type ReplayOptions,
   type SimulatedTransaction,
@@ -256,79 +253,6 @@ function instructionAmounts(
   return { base: 0, quote: 0 };
 }
 
-/** Treat current inventory as the new initial so the next price move compounds. */
-function freezeCurrentAsInitial(bins: SimulatedBin[]): SimulatedBin[] {
-  return bins.map(bin => ({
-    ...bin,
-    initialTokenType: bin.currentTokenType,
-    initialAmount: bin.currentAmount,
-    initialDisplayValue:
-      bin.currentTokenType === 'base'
-        ? bin.currentAmount * bin.price
-        : bin.currentAmount,
-  }));
-}
-
-function rebaseInventory(
-  bins: SimulatedBin[],
-  toPrice: number
-): SimulatedBin[] {
-  if (bins.length === 0 || !(toPrice > 0)) return bins;
-  return freezeCurrentAsInitial(
-    runSimulation(cloneBins(bins), toPrice, toPrice).simulatedBins
-  );
-}
-
-function removeTokensInRange(
-  bins: SimulatedBin[],
-  minBinId: number,
-  maxBinId: number,
-  removeBase: number,
-  removeQuote: number
-): SimulatedBin[] {
-  let baseTotal = 0;
-  let quoteTotal = 0;
-  for (const bin of bins) {
-    if (bin.id < minBinId || bin.id > maxBinId || bin.currentAmount <= 1e-18) continue;
-    if (bin.currentTokenType === 'base') baseTotal += bin.currentAmount;
-    else quoteTotal += bin.currentAmount;
-  }
-  const baseFactor = baseTotal > 1e-18 ? Math.min(1, Math.max(0, removeBase / baseTotal)) : 0;
-  const quoteFactor = quoteTotal > 1e-18 ? Math.min(1, Math.max(0, removeQuote / quoteTotal)) : 0;
-  if (baseFactor <= 0 && quoteFactor <= 0) return bins;
-
-  return bins.map(bin => {
-    if (bin.id < minBinId || bin.id > maxBinId) return bin;
-    const factor = 1 - (bin.currentTokenType === 'base' ? baseFactor : quoteFactor);
-    if (factor >= 1) return bin;
-    return {
-      ...bin,
-      initialAmount: bin.initialAmount * factor,
-      initialValueInQuote: bin.initialValueInQuote * factor,
-      initialDisplayValue: bin.initialDisplayValue * factor,
-      currentAmount: bin.currentAmount * factor,
-      currentValueInQuote: bin.currentValueInQuote * factor,
-    };
-  });
-}
-
-function addDepositBins(
-  existing: SimulatedBin[],
-  deposit: SimulatedBin[],
-  replay: ReplayOptions
-): SimulatedBin[] {
-  if (deposit.length === 0) return existing;
-  if (existing.length === 0) return deposit;
-  return mergeSimulatedBins([existing, deposit], {
-    binStep: replay.binStep,
-    baseDecimals: replay.baseDecimals,
-    quoteDecimals: replay.quoteDecimals,
-    applyDecimalAdjustment: replay.applyDecimalAdjustment,
-    activeBinId: replay.activeBinId,
-    fillGaps: true,
-  });
-}
-
 interface SequentialStackResult {
   slices: LiquiditySlice[];
   stackedTxs: SimulatedTransaction[];
@@ -370,25 +294,18 @@ function orderEventsForStack(events: PositionHistoryEvent[]): PositionHistoryEve
   return result;
 }
 
+/** Convert parsed history events into unified liquidity txs, then stack them. */
 function stackPositionsSequentially(
   events: PositionHistoryEvent[],
   replay: ReplayOptions,
   currentPrice: number,
-  knownPositions: string[]
+  _knownPositions: string[]
 ): SequentialStackResult {
   const pendingRange = new Map<string, { lowerBinId: number; upperBinId: number }>();
-  const binsByPosition = new Map<string, SimulatedBin[]>();
   const opened = new Set<string>();
-  const stackedTxs: SimulatedTransaction[] = [];
+  const txs: SimulatedTransaction[] = [];
   const claimedFees: ClaimedFeesSummary = { base: 0, quote: 0, usd: 0 };
-  let initialPrice = 0;
-  let initialActiveBinId = 0;
   let lastPrice = 0;
-
-  const replayAt = (activeBinId: number): ReplayOptions => ({
-    ...replay,
-    activeBinId: activeBinId || replay.activeBinId,
-  });
 
   for (const event of orderEventsForStack(events)) {
     const ix = event.instruction;
@@ -425,6 +342,7 @@ function stackPositionsSequentially(
           replay.applyDecimalAdjustment
         )
       : lastPrice;
+    if (price > 0) lastPrice = price;
 
     const rangeFromIx =
       ix.lower_bin_id != null && ix.upper_bin_id != null
@@ -434,13 +352,6 @@ function stackPositionsSequentially(
           }
         : pendingRange.get(positionAddress);
     if (!rangeFromIx || rangeFromIx.upperBinId < rangeFromIx.lowerBinId) continue;
-
-    if (price > 0) {
-      for (const [address, bins] of binsByPosition) {
-        binsByPosition.set(address, rebaseInventory(bins, price));
-      }
-      lastPrice = price;
-    }
 
     const amounts = instructionAmounts(event, replay.baseDecimals, replay.quoteDecimals);
     const lowerPrice = getPriceFromId(
@@ -457,32 +368,14 @@ function stackPositionsSequentially(
       replay.quoteDecimals,
       replay.applyDecimalAdjustment
     );
+    const timestamp = event.timestamp instanceof Date
+      ? event.timestamp.getTime()
+      : new Date(event.timestamp).getTime();
 
     if (ix.type === 'AddLiquidity') {
-      if (!(initialPrice > 0) && price > 0) {
-        initialPrice = price;
-        initialActiveBinId = activeSimId;
-      }
-      const deposit = getInitialBinsForBinRange({
-        binStep: replay.binStep,
-        minBinId: rangeFromIx.lowerBinId,
-        maxBinId: rangeFromIx.upperBinId,
-        activeBinId: activeSimId || replay.activeBinId,
-        baseAmount: amounts.base,
-        quoteAmount: amounts.quote,
-        strategy: strategyFromParser(ix.strategy),
-        baseDecimals: replay.baseDecimals,
-        quoteDecimals: replay.quoteDecimals,
-        applyDecimalAdjustment: replay.applyDecimalAdjustment,
-      });
-      const existing = binsByPosition.get(positionAddress) ?? [];
-      binsByPosition.set(
-        positionAddress,
-        addDepositBins(existing, deposit, replayAt(activeSimId))
-      );
       const isFirst = !opened.has(positionAddress);
-      stackedTxs.push({
-        id: `hist-${event.signature}-${stackedTxs.length}`,
+      txs.push({
+        id: `hist-${event.signature}-${txs.length}`,
         type: isFirst ? 'add-position' : 'add-liquidity',
         price: price || lowerPrice,
         strategy: strategyFromParser(ix.strategy),
@@ -492,27 +385,18 @@ function stackPositionsSequentially(
         upperPrice,
         positionAddress,
         removeBps: 0,
+        source: 'historical',
+        signature: event.signature,
+        slot: event.slot,
+        timestamp,
       });
       opened.add(positionAddress);
       pendingRange.set(positionAddress, rangeFromIx);
       continue;
     }
 
-    const existing = binsByPosition.get(positionAddress) ?? [];
-    if (existing.length > 0) {
-      binsByPosition.set(
-        positionAddress,
-        removeTokensInRange(
-          existing,
-          rangeFromIx.lowerBinId,
-          rangeFromIx.upperBinId,
-          amounts.base,
-          amounts.quote
-        )
-      );
-    }
-    stackedTxs.push({
-      id: `hist-${event.signature}-${stackedTxs.length}`,
+    txs.push({
+      id: `hist-${event.signature}-${txs.length}`,
       type: 'remove-liquidity',
       price: price || lowerPrice,
       strategy: 'spot',
@@ -522,31 +406,21 @@ function stackPositionsSequentially(
       upperPrice,
       positionAddress,
       removeBps: 0,
+      source: 'historical',
+      signature: event.signature,
+      slot: event.slot,
+      timestamp,
     });
   }
 
-  const displayPrice = currentPrice > 0 ? currentPrice : lastPrice || initialPrice;
-  const slices: LiquiditySlice[] = [];
-  const known = new Set(knownPositions);
-  for (const [positionAddress, bins] of binsByPosition) {
-    const atCurrent = displayPrice > 0 ? rebaseInventory(bins, displayPrice) : bins;
-    const liquid = trimEmptyEdgeBins(atCurrent);
-    if (liquid.length === 0) continue;
-    slices.push({
-      id: `historical-${positionAddress}`,
-      positionAddress,
-      isSimulatedPosition: !known.has(positionAddress),
-      openedAtPrice: initialPrice || displayPrice,
-      bins: liquid,
-      scale: 1,
-      minPrice: liquid[0].price,
-      maxPrice: liquid[liquid.length - 1].price,
-      lowerBinId: liquid[0].id,
-      upperBinId: liquid[liquid.length - 1].id,
-    });
-  }
-
-  return { slices, stackedTxs, claimedFees, initialPrice, initialActiveBinId };
+  const stacked = stackLiquidityTransactions(txs, replay, currentPrice);
+  return {
+    slices: stacked.slices,
+    stackedTxs: stacked.transactions,
+    claimedFees,
+    initialPrice: stacked.initialPrice,
+    initialActiveBinId: stacked.initialActiveBinId,
+  };
 }
 
 function instructionOrder(type: string): number {

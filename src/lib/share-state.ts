@@ -107,13 +107,16 @@ function fromCompactTx(raw: unknown, index: number): SimulatedTransaction | null
     upperPrice: finiteNumber(item.u) ?? 0,
     positionAddress: address,
     removeBps: Math.max(0, finiteNumber(item.r) ?? 0),
+    source: 'simulated',
   };
 }
 
 function encodeTransactions(transactions: SimulatedTransaction[]): string | null {
-  if (!transactions.length) return null;
+  // On-chain history is reloaded from the wallet — only share simulated overlays.
+  const simulated = transactions.filter(tx => tx.source !== 'historical');
+  if (!simulated.length) return null;
   try {
-    return JSON.stringify(transactions.map(toCompactTx));
+    return JSON.stringify(simulated.map(toCompactTx));
   } catch {
     return null;
   }

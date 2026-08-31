@@ -15,6 +15,14 @@ import type { WalletPositionDetail } from './wallet-positions';
 
 export type SimulatedTxType = 'add-liquidity' | 'remove-liquidity' | 'add-position';
 
+/** Where a liquidity tx came from — historical (on-chain) or user-simulated. */
+export type LiquidityTxSource = 'historical' | 'simulated';
+
+/**
+ * Unified liquidity transaction used for both on-chain history and in-app
+ * simulations. Historical and simulated txs share this shape so they stack,
+ * ledger, and render uniformly.
+ */
 export interface SimulatedTransaction {
   id: string;
   type: SimulatedTxType;
@@ -26,6 +34,21 @@ export interface SimulatedTransaction {
   upperPrice: number;
   positionAddress: string;
   removeBps: number;
+  /** Defaults to `simulated` when omitted (share links, older state). */
+  source?: LiquidityTxSource;
+  /** On-chain signature when `source === 'historical'`. */
+  signature?: string;
+  slot?: number;
+  /** Unix ms or ISO string. */
+  timestamp?: number | string;
+}
+
+export function isHistoricalTx(tx: SimulatedTransaction): boolean {
+  return tx.source === 'historical';
+}
+
+export function isSimulatedTx(tx: SimulatedTransaction): boolean {
+  return !isHistoricalTx(tx);
 }
 
 export interface LiquiditySlice {
@@ -153,7 +176,25 @@ export function summarizeTransactionEconomics(
     const tx = transactions[i];
     if (tx.type === 'remove-liquidity') {
       const targets = slices.filter(slice => slice.positionAddress === tx.positionAddress);
-      const measured = measureRemoval(targets, tx, replay);
+      let measured = tx.removeBps > 0
+        ? measureRemoval(targets, tx, replay)
+        : {
+            costBasis: Math.max(0, tx.quoteAmount + tx.baseAmount * (tx.price > 0 ? tx.price : 0)),
+            proceeds: Math.max(0, tx.quoteAmount + tx.baseAmount * (tx.price > 0 ? tx.price : 0)),
+            removedBase: tx.baseAmount,
+          };
+      // Amount-only historical removals: derive cost share from full-position mark.
+      if (!(tx.removeBps > 0) && targets.length > 0) {
+        const before = measureRemoval(targets, { ...tx, removeBps: 10000 }, replay);
+        if (before.proceeds > 1e-12) {
+          const share = Math.min(1, measured.proceeds / before.proceeds);
+          measured = {
+            costBasis: before.costBasis * share,
+            proceeds: measured.proceeds,
+            removedBase: before.removedBase * share,
+          };
+        }
+      }
       const pnl = measured.proceeds - measured.costBasis;
       perTx.push({ costBasis: measured.costBasis, proceeds: measured.proceeds, realizedPnl: pnl });
       withdrawals += measured.proceeds;
@@ -1017,6 +1058,216 @@ export function simulatedPositionDetail(options: {
   };
 }
 
+function freezeCurrentAsInitial(bins: SimulatedBin[]): SimulatedBin[] {
+  return bins.map(bin => ({
+    ...bin,
+    initialTokenType: bin.currentTokenType,
+    initialAmount: bin.currentAmount,
+    initialDisplayValue:
+      bin.currentTokenType === 'base'
+        ? bin.currentAmount * bin.price
+        : bin.currentAmount,
+  }));
+}
+
+function rebaseInventory(bins: SimulatedBin[], toPrice: number): SimulatedBin[] {
+  if (bins.length === 0 || !(toPrice > 0)) return bins;
+  return freezeCurrentAsInitial(
+    runSimulation(cloneBins(bins), toPrice, toPrice).simulatedBins
+  );
+}
+
+function removeTokensInRange(
+  bins: SimulatedBin[],
+  minBinId: number,
+  maxBinId: number,
+  removeBase: number,
+  removeQuote: number
+): SimulatedBin[] {
+  let baseTotal = 0;
+  let quoteTotal = 0;
+  for (const bin of bins) {
+    if (bin.id < minBinId || bin.id > maxBinId || bin.currentAmount <= 1e-18) continue;
+    if (bin.currentTokenType === 'base') baseTotal += bin.currentAmount;
+    else quoteTotal += bin.currentAmount;
+  }
+  const baseFactor = baseTotal > 1e-18 ? Math.min(1, Math.max(0, removeBase / baseTotal)) : 0;
+  const quoteFactor = quoteTotal > 1e-18 ? Math.min(1, Math.max(0, removeQuote / quoteTotal)) : 0;
+  if (baseFactor <= 0 && quoteFactor <= 0) return bins;
+
+  return bins.map(bin => {
+    if (bin.id < minBinId || bin.id > maxBinId) return bin;
+    const factor = 1 - (bin.currentTokenType === 'base' ? baseFactor : quoteFactor);
+    if (factor >= 1) return bin;
+    return {
+      ...bin,
+      initialAmount: bin.initialAmount * factor,
+      initialValueInQuote: bin.initialValueInQuote * factor,
+      initialDisplayValue: bin.initialDisplayValue * factor,
+      currentAmount: bin.currentAmount * factor,
+      currentValueInQuote: bin.currentValueInQuote * factor,
+    };
+  });
+}
+
+function addDepositBins(
+  existing: SimulatedBin[],
+  deposit: SimulatedBin[],
+  replay: ReplayOptions
+): SimulatedBin[] {
+  if (deposit.length === 0) return existing;
+  if (existing.length === 0) return deposit;
+  return mergeSimulatedBins([existing, deposit], {
+    binStep: replay.binStep,
+    baseDecimals: replay.baseDecimals,
+    quoteDecimals: replay.quoteDecimals,
+    applyDecimalAdjustment: replay.applyDecimalAdjustment,
+    activeBinId: replay.activeBinId,
+    fillGaps: true,
+  });
+}
+
+export interface StackLiquidityResult {
+  slices: LiquiditySlice[];
+  /** Same txs with removeBps filled for amount-based historical removals. */
+  transactions: SimulatedTransaction[];
+  initialPrice: number;
+  initialActiveBinId: number;
+}
+
+/**
+ * Sequentially stack historical + simulated liquidity txs into position slices.
+ * Converts existing inventory to each tx's price before applying the deposit/removal
+ * so later actions compound on earlier ones (same path for both sources).
+ */
+export function stackLiquidityTransactions(
+  transactions: SimulatedTransaction[],
+  replay: ReplayOptions,
+  currentPrice: number
+): StackLiquidityResult {
+  const binsByPosition = new Map<string, SimulatedBin[]>();
+  const opened = new Set<string>();
+  const refined: SimulatedTransaction[] = [];
+  let initialPrice = 0;
+  let initialActiveBinId = 0;
+  let lastPrice = 0;
+
+  for (const tx of transactions) {
+    const positionAddress = tx.positionAddress;
+    const price = tx.price > 0 ? tx.price : lastPrice;
+
+    if (price > 0) {
+      for (const [address, bins] of binsByPosition) {
+        binsByPosition.set(address, rebaseInventory(bins, price));
+      }
+      lastPrice = price;
+    }
+
+    const minBinId = tx.lowerPrice > 0
+      ? getIdFromPrice(tx.lowerPrice, replay.binStep, replay.baseDecimals, replay.quoteDecimals, replay.applyDecimalAdjustment)
+      : Number.NEGATIVE_INFINITY;
+    const maxBinId = tx.upperPrice > 0
+      ? getIdFromPrice(tx.upperPrice, replay.binStep, replay.baseDecimals, replay.quoteDecimals, replay.applyDecimalAdjustment)
+      : Number.POSITIVE_INFINITY;
+    const activeBinId = price > 0
+      ? getIdFromPrice(price, replay.binStep, replay.baseDecimals, replay.quoteDecimals, replay.applyDecimalAdjustment)
+      : replay.activeBinId;
+
+    if (tx.type === 'remove-liquidity') {
+      const existing = binsByPosition.get(positionAddress) ?? [];
+      let removeBps = tx.removeBps;
+      if (existing.length > 0) {
+        const before = binsToAmounts(existing, true);
+        const updated = removeTokensInRange(
+          existing,
+          minBinId,
+          maxBinId,
+          tx.baseAmount,
+          tx.quoteAmount
+        );
+        binsByPosition.set(positionAddress, updated);
+        if (!(removeBps > 0) && before.value > 1e-12) {
+          const after = binsToAmounts(updated, true);
+          removeBps = Math.max(0, Math.min(10000, Math.round(((before.value - after.value) / before.value) * 10000)));
+        }
+      }
+      refined.push({ ...tx, removeBps: removeBps || tx.removeBps || 0, source: tx.source ?? 'simulated' });
+      continue;
+    }
+
+    if (!(initialPrice > 0) && price > 0) {
+      initialPrice = price;
+      initialActiveBinId = activeBinId;
+    }
+
+    const isFirst = !opened.has(positionAddress) || tx.type === 'add-position';
+    const hostBins = binsByPosition.get(positionAddress) ?? [];
+    const hostMin = hostBins.length ? Math.min(...hostBins.map(bin => bin.id)) : activeBinId;
+    const hostMax = hostBins.length ? Math.max(...hostBins.map(bin => bin.id)) : activeBinId;
+    const lowerBinId = Number.isFinite(minBinId) ? minBinId : hostMin;
+    const upperBinId = Number.isFinite(maxBinId) ? maxBinId : hostMax;
+
+    if (!(upperBinId >= lowerBinId)) {
+      refined.push({ ...tx, source: tx.source ?? 'simulated' });
+      continue;
+    }
+
+    const deposit = getInitialBinsForBinRange({
+      binStep: replay.binStep,
+      minBinId: lowerBinId,
+      maxBinId: upperBinId,
+      activeBinId,
+      baseAmount: tx.baseAmount,
+      quoteAmount: tx.quoteAmount,
+      strategy: tx.strategy,
+      baseDecimals: replay.baseDecimals,
+      quoteDecimals: replay.quoteDecimals,
+      applyDecimalAdjustment: replay.applyDecimalAdjustment,
+    });
+    const existing = binsByPosition.get(positionAddress) ?? [];
+    binsByPosition.set(
+      positionAddress,
+      addDepositBins(existing, deposit, { ...replay, activeBinId })
+    );
+    opened.add(positionAddress);
+    refined.push({
+      ...tx,
+      type: isFirst && tx.type !== 'add-liquidity' ? 'add-position' : tx.type,
+      source: tx.source ?? 'simulated',
+    });
+  }
+
+  const displayPrice = currentPrice > 0 ? currentPrice : lastPrice || initialPrice;
+  const slices: LiquiditySlice[] = [];
+  for (const [positionAddress, bins] of binsByPosition) {
+    const atCurrent = displayPrice > 0 ? rebaseInventory(bins, displayPrice) : bins;
+    const liquid = trimEmptyEdgeBins(atCurrent);
+    if (liquid.length === 0) continue;
+    const historical = refined.some(
+      tx => tx.positionAddress === positionAddress && isHistoricalTx(tx)
+    );
+    slices.push({
+      id: `${historical ? 'historical' : 'simulated'}-${positionAddress}`,
+      positionAddress,
+      isSimulatedPosition: !historical,
+      openedAtPrice: initialPrice || displayPrice,
+      bins: liquid,
+      scale: 1,
+      minPrice: liquid[0].price,
+      maxPrice: liquid[liquid.length - 1].price,
+      lowerBinId: liquid[0].id,
+      upperBinId: liquid[liquid.length - 1].id,
+    });
+  }
+
+  return {
+    slices,
+    transactions: refined,
+    initialPrice,
+    initialActiveBinId,
+  };
+}
+
 export function formatRealizedPnl(pnl: number, quoteSymbol: string): string {
   if (!Number.isFinite(pnl) || Math.abs(pnl) < 1e-9) return `no realized gain/loss`;
   const word = pnl > 0 ? 'gain' : 'loss';
@@ -1029,6 +1280,7 @@ export function describeTransaction(
   symbols: { base: string; quote: string }
 ): string {
   const price = Number.isFinite(tx.price) ? trimNum(tx.price) : '—';
+  const prefix = isHistoricalTx(tx) ? 'On-chain: ' : '';
   if (tx.type === 'remove-liquidity') {
     const parts: string[] = [];
     if (tx.baseAmount > 0) parts.push(`${trimNum(tx.baseAmount)} ${symbols.base}`);
@@ -1037,16 +1289,17 @@ export function describeTransaction(
     const range = tx.lowerPrice > 0 && tx.upperPrice > 0
       ? ` of ${trimNum(tx.lowerPrice)}–${trimNum(tx.upperPrice)}`
       : '';
-    return `Remove ${(tx.removeBps / 100).toFixed(0)}%${range}${amount} at ${price}`;
+    const bpsLabel = tx.removeBps > 0 ? `${(tx.removeBps / 100).toFixed(0)}%` : 'liquidity';
+    return `${prefix}Remove ${bpsLabel}${range}${amount} at ${price}`;
   }
   const parts: string[] = [];
   if (tx.baseAmount > 0) parts.push(`${trimNum(tx.baseAmount)} ${symbols.base}`);
   if (tx.quoteAmount > 0) parts.push(`${trimNum(tx.quoteAmount)} ${symbols.quote}`);
   const amount = parts.join(' + ') || '0';
   if (tx.type === 'add-position') {
-    return `New ${tx.strategy} position ${trimNum(tx.lowerPrice)}–${trimNum(tx.upperPrice)} · ${amount} · purchased at ${price}`;
+    return `${prefix}New ${tx.strategy} position ${trimNum(tx.lowerPrice)}–${trimNum(tx.upperPrice)} · ${amount} · purchased at ${price}`;
   }
-  return `Add ${amount} (${tx.strategy}) · purchased at ${price}`;
+  return `${prefix}Add ${amount} (${tx.strategy}) · purchased at ${price}`;
 }
 
 function trimNum(value: number): string {
