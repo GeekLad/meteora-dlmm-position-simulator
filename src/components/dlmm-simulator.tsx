@@ -205,7 +205,11 @@ export function DlmmSimulator() {
   }, [params, baseDecimals, quoteDecimals, applyDecimalAdjustment]);
 
   const firstTxPrice = simulatedTxs[0]?.price;
-  const historyLocksInitialPrice = Boolean(walletHistory && walletHistory.initialPrice > 0);
+  const historyLocksInitialPrice = Boolean(
+    historicalSlices.length > 0
+    && walletHistory
+    && walletHistory.initialPrice > 0
+  );
   const costBasisPrice =
     typeof params.initialPrice === 'number' && params.initialPrice > 0
       ? params.initialPrice
@@ -1270,18 +1274,29 @@ export function DlmmSimulator() {
                   poolStartPrice={poolStartPrice}
                   showRestore={!!walletBins}
                   entryPriceFromHistory={historyLocksInitialPrice}
-                  historyStatusMessage={
-                    walletHistory && walletHistory.stackedTxs.length > 0
-                      ? [
-                          `Loaded ${walletHistory.stackedTxs.length} historical liquidity tx${walletHistory.stackedTxs.length === 1 ? '' : 's'}; entry price from first deposit.`,
-                          walletHistory.reconciledToOnChain
-                            ? 'Shape reconciled to on-chain shares with historical cost basis.'
-                            : (walletHistory.shapeValidation.ok
-                                ? 'Stacked shape matches on-chain.'
-                                : walletHistory.shapeValidation.message),
-                        ].filter(Boolean).join(' ')
-                      : null
-                  }
+                  historyStatusMessage={(() => {
+                    if (!walletHistory) return null;
+                    const missing = walletHistory.missingSignatures.length;
+                    const loaded = walletHistory.stackedTxs.length;
+                    if (loaded <= 0 && missing > 0) {
+                      return `Could not fetch historical transactions from Solana RPC (${missing} signature${missing === 1 ? '' : 's'}). Set the initial price manually for cost basis.`;
+                    }
+                    if (loaded <= 0) return null;
+                    const parts = [
+                      `Loaded ${loaded} historical liquidity tx${loaded === 1 ? '' : 's'}; entry price from first deposit.`,
+                      walletHistory.reconciledToOnChain
+                        ? 'Shape uses on-chain shares with historical cost basis.'
+                        : (walletHistory.shapeValidation.ok
+                            ? 'Stacked shape matches on-chain.'
+                            : walletHistory.shapeValidation.message),
+                    ];
+                    if (missing > 0) {
+                      parts.push(
+                        `${missing} signature${missing === 1 ? '' : 's'} still missing after retries (rate limit or pruned RPC history); cost basis may be slightly incomplete.`
+                      );
+                    }
+                    return parts.filter(Boolean).join(' ');
+                  })()}
                   emptyHint="No positions yet. Create one to start the simulation."
                 />
               </CardContent>

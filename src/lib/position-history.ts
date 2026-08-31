@@ -25,9 +25,12 @@ import { getParsedTransaction, mapWithThrottle } from './solana-rpc';
 
 const METEORA_API_BASE = 'https://dlmm.datapi.meteora.ag';
 const REQUEST_GAP_MS = 40;
-const RPC_GAP_MS = 120;
+/** Gap between signature fetches on top of the shared RPC rate limiter. */
+const RPC_GAP_MS = 400;
 const SHAPE_ABS_TOLERANCE = 1e-6;
 const SHAPE_REL_TOLERANCE = 0.02;
+/** Retry a second pass for signatures that failed transiently on the first sweep. */
+const HISTORY_RETRY_PASSES = 2;
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -246,14 +249,12 @@ export async function fetchParsedPositionHistory(
   const parseErrors: string[] = [];
   const events: PositionHistoryEvent[] = [];
   const wanted = new Set(positionAddresses);
+  const parsedSignatures = new Set<string>();
 
-  await mapWithThrottle(signatures, async (signature) => {
+  const ingestSignature = async (signature: string): Promise<'ok' | 'missing' | 'error'> => {
     try {
       const raw = await getParsedTransaction(signature);
-      if (!raw) {
-        missingSignatures.push(signature);
-        return;
-      }
+      if (!raw) return 'missing';
       const parsed = parseMeteoraTransaction(raw);
       const apiEvents = apiBySignature.get(signature) ?? [];
       for (const instruction of parsed) {
@@ -277,12 +278,40 @@ export async function fetchParsedPositionHistory(
           api: apiMatch,
         });
       }
+      parsedSignatures.add(signature);
+      return 'ok';
     } catch (error) {
       parseErrors.push(
         `${signature}: ${error instanceof Error ? error.message : 'parse failed'}`
       );
+      return 'error';
     }
-  }, RPC_GAP_MS);
+  };
+
+  let pending = signatures;
+  for (let pass = 0; pass < HISTORY_RETRY_PASSES && pending.length > 0; pass++) {
+    if (pass > 0) {
+      // Let rate-limit cooldowns expire before the retry sweep.
+      await sleep(2_500 * pass);
+      // Drop sticky errors from the prior pass; retry may succeed.
+      for (let i = parseErrors.length - 1; i >= 0; i--) {
+        if (pending.some(signature => parseErrors[i].startsWith(`${signature}:`))) {
+          parseErrors.splice(i, 1);
+        }
+      }
+    }
+    const failedThisPass: string[] = [];
+    await mapWithThrottle(pending, async (signature) => {
+      if (parsedSignatures.has(signature)) return;
+      const result = await ingestSignature(signature);
+      if (result !== 'ok') failedThisPass.push(signature);
+    }, RPC_GAP_MS);
+    pending = failedThisPass;
+  }
+
+  for (const signature of signatures) {
+    if (!parsedSignatures.has(signature)) missingSignatures.push(signature);
+  }
 
   const sorted = sortHistoryEvents(events);
   const eventsByPosition: Record<string, PositionHistoryEvent[]> = {};
@@ -712,13 +741,11 @@ export async function loadPositionHistory(
   let finalCombined = combinedBins;
   let reconciledToOnChain = false;
 
-  // Strategy-weight replay often matches inventory totals but not live share
-  // weights. When totals agree, adopt on-chain bin shape and keep historical cost.
-  if (
-    shapeValidation.totalsOk
-    && Object.keys(onChainByPosition).length > 0
-    && historicalSlices.length > 0
-  ) {
+  // Prefer live on-chain share weights whenever available. Strategy replay is a
+  // good cost-basis source but often diverges on per-bin weights (and further
+  // when a few historical signatures fail to fetch). Overlay deposit cost onto
+  // on-chain inventory so the chart matches chain while P&L stays history-based.
+  if (Object.keys(onChainByPosition).length > 0 && historicalSlices.length > 0) {
     const histCost = slicesCostBasis(historicalSlices);
     const reconciled: LiquiditySlice[] = [];
     const nextPositionBins: Record<string, SimulatedBin[]> = {};
@@ -754,10 +781,15 @@ export async function loadPositionHistory(
       finalPositionBins = nextPositionBins;
       finalCombined = combineSliceBins(reconciled, replay);
       reconciledToOnChain = true;
+      const missingNote = missingSignatures.length > 0
+        ? ` ${missingSignatures.length} historical signature(s) could not be fetched; cost basis may be incomplete.`
+        : '';
       shapeValidation = {
         ...shapeValidation,
-        ok: true,
-        message: `${shapeValidation.message} Bin weights reconciled to on-chain shares; cost basis kept from deposit history.`,
+        ok: shapeValidation.totalsOk || missingSignatures.length === 0,
+        message: shapeValidation.totalsOk
+          ? `On-chain bin weights with historical cost basis.${missingNote}`
+          : `On-chain bin weights with historical cost basis (strategy replay inventory differed).${missingNote}`,
       };
     }
   }

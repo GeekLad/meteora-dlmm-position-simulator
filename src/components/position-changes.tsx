@@ -1251,8 +1251,13 @@ export function PositionChanges({
             </p>
           )}
 
-          {showRestore && entryPriceFromHistory && historyStatusMessage && (
-            <p className="rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-xs leading-snug text-muted-foreground">
+          {showRestore && historyStatusMessage && (
+            <p className={cn(
+              'rounded-md border px-3 py-2 text-xs leading-snug',
+              entryPriceFromHistory
+                ? 'border-border/60 bg-muted/40 text-muted-foreground'
+                : 'border-amber-500/40 bg-amber-500/10 text-amber-950 dark:text-amber-200'
+            )}>
               {historyStatusMessage}
             </p>
           )}

@@ -529,7 +529,14 @@ export async function loadPoolSimulation(options: {
       onChainByPosition,
       onChainCombined,
     });
-    if (history.stackedTxs.length > 0 && history.combinedBins.length > 0) {
+    // Use history whenever we built slices (usually on-chain weights + deposit
+    // cost). Incomplete signature fetches still produce a usable entry price;
+    // the UI warns when some txs were skipped.
+    const historyUsable =
+      history.stackedTxs.length > 0
+      && history.combinedBins.length > 0
+      && history.initialPrice > 0;
+    if (historyUsable) {
       useHistoricalShape = true;
       bins = history.combinedBins;
       positionBins = {
@@ -541,6 +548,14 @@ export async function loadPoolSimulation(options: {
           positionBins[position.positionAddress] = [];
         }
       }
+    }
+    if (history.missingSignatures.length > 0 || history.parseErrors.length > 0) {
+      console.warn('Position history partially incomplete', {
+        missing: history.missingSignatures.length,
+        errors: history.parseErrors.slice(0, 5),
+        stacked: history.stackedTxs.length,
+        reconciled: history.reconciledToOnChain,
+      });
     }
   } catch (error) {
     console.warn('Failed to load position transaction history', error);
