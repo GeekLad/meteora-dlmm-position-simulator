@@ -16,23 +16,30 @@ export function formatNumber(
 
     if (value === 0) return "0";
 
+    // Intl.NumberFormat only accepts 0–20 fraction digits
+    const fractionDigits = Number.isFinite(maximumFractionDigits)
+      ? Math.min(20, Math.max(0, Math.floor(maximumFractionDigits)))
+      : 4;
+
     const absoluteValue = Math.abs(value);
 
     if (absoluteValue > 0 && absoluteValue < 1) {
-        let tempValue = absoluteValue;
         let leadingZeros = 0;
-        if (tempValue < 1) {
-            const match = tempValue.toExponential().match(/e-(\d+)/);
-            if (match) {
-                leadingZeros = parseInt(match[1], 10);
-            }
+        const match = absoluteValue.toExponential().match(/e-(\d+)/);
+        if (match) {
+            leadingZeros = parseInt(match[1], 10);
         }
-        
-        const effectiveDigits = maximumFractionDigits + leadingZeros;
-        
+
+        const requestedDigits = fractionDigits + leadingZeros;
+        if (requestedDigits > 20) {
+            return value.toExponential(Math.min(6, fractionDigits));
+        }
+
+        const effectiveDigits = Math.max(2, requestedDigits);
+
         let formatted = value.toLocaleString('en-US', {
             maximumFractionDigits: effectiveDigits,
-            minimumFractionDigits: 2,
+            minimumFractionDigits: Math.min(2, effectiveDigits),
             useGrouping: false,
         });
 
@@ -46,7 +53,7 @@ export function formatNumber(
     }
 
     return value.toLocaleString('en-US', {
-        maximumFractionDigits: maximumFractionDigits,
+        maximumFractionDigits: fractionDigits,
         useGrouping: false,
     });
 }

@@ -15,6 +15,10 @@ import type { Strategy } from './dlmm';
  * Weights determine how tokens are distributed across bins. Higher weights
  * mean more liquidity allocated to that bin.
  *
+ * Loops are always clamped to [minBinId, maxBinId]. Quote vs base is still
+ * split at the real active bin (id <= activeBinId is quote), so one-sided
+ * deposits work when the active price has moved outside the position range.
+ *
  * @param strategy - The distribution strategy to use
  * @param minBinId - Lower bound bin ID
  * @param maxBinId - Upper bound bin ID
@@ -28,10 +32,16 @@ export function calculateStrategyWeights(
   activeBinId: number
 ): Map<number, number> {
   const weights = new Map<number, number>();
+  if (maxBinId < minBinId) return weights;
+
+  // Bins at or below the real active price hold quote; above hold base.
+  const quoteHi = Math.min(activeBinId, maxBinId);
+  const baseLo = Math.max(activeBinId + 1, minBinId);
+  // Shape is relative to the in-range edge when the active price is out of range.
+  const shapeActive = Math.min(maxBinId, Math.max(minBinId, activeBinId));
 
   switch (strategy) {
     case 'spot': {
-      // Spot: Equal weight for all bins (uniform distribution)
       for (let id = minBinId; id <= maxBinId; id++) {
         weights.set(id, 1);
       }
@@ -39,44 +49,23 @@ export function calculateStrategyWeights(
     }
 
     case 'bid-ask': {
-      // Bid-Ask: Linear concentration toward active bin
-      // Weight increases as bins get closer to the active price
-
-      // Quote side (id <= activeBinId)
-      for (let id = minBinId; id <= activeBinId; id++) {
-        const distance = activeBinId - id;
-        weights.set(id, distance + 1);
+      // More weight farther from the active price (V shape / order-book ends).
+      for (let id = minBinId; id <= quoteHi; id++) {
+        weights.set(id, shapeActive - id + 1);
       }
-
-      // Base side (id > activeBinId)
-      for (let id = activeBinId + 1; id <= maxBinId; id++) {
-        const distance = id - activeBinId;
-        weights.set(id, distance + 1);
+      for (let id = baseLo; id <= maxBinId; id++) {
+        weights.set(id, id - shapeActive + 1);
       }
       break;
     }
 
     case 'curve': {
-      // Curve: Inverse of bid-ask (concentrated away from active price)
-      // Weight increases as bins get closer to the active price (opposite of bid-ask)
-
-      const quoteBinsCount = activeBinId - minBinId + 1; // Include active bin
-      const baseBinsCount = maxBinId - activeBinId;
-
-      // Quote side (includes active bin)
-      // Inverse of bid-ask: minBinId has lowest weight, activeBinId has highest
-      for (let id = minBinId; id <= activeBinId; id++) {
-        const distance = activeBinId - id;
-        const weight = quoteBinsCount - distance;
-        weights.set(id, weight);
+      // More weight toward the in-range side nearest the active price.
+      for (let id = minBinId; id <= quoteHi; id++) {
+        weights.set(id, id - minBinId + 1);
       }
-
-      // Base side
-      // Inverse of bid-ask: bins closer to maxBinId have lower weight
-      for (let id = activeBinId + 1; id <= maxBinId; id++) {
-        const distance = id - activeBinId;
-        const weight = baseBinsCount - distance + 1;
-        weights.set(id, weight);
+      for (let id = baseLo; id <= maxBinId; id++) {
+        weights.set(id, maxBinId - id + 1);
       }
       break;
     }

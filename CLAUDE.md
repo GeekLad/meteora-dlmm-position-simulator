@@ -32,8 +32,14 @@ The heart of the application implements the DLMM bin-based liquidity model:
   - `curve`: Curved distribution with smooth concentration
 - **Simulation Flow**:
   1. `getInitialBins()` - Distributes base/quote tokens across bins based on strategy
-  2. `runSimulation()` - Simulates token swaps as price moves, updating bin contents
-  3. Bins automatically convert between base/quote tokens as price crosses them
+  2. `getInitialBinsForBinRange()` / `mergeSimulatedBins()` - Reconstruct and overlay live wallet positions
+  3. `runSimulation()` - Simulates token swaps as price moves, updating bin contents
+  4. Bins automatically convert between base/quote tokens as price crosses them
+
+### Wallet Positions (`src/lib/wallet-positions.ts`)
+
+Loads a wallet's open DLMM positions from the public Meteora Data API (`/portfolio/open` + `/positions/{pool}/pnl`), groups them by pair then pool, and reconstructs a combined bin distribution for price simulation. No Solana RPC required.
+
 
 ### Main Component (`src/components/dlmm-simulator.tsx`)
 

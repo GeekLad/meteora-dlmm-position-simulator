@@ -39,10 +39,12 @@ export function formatNumberForDisplay(
   if (useSubscriptNotation && value > 0 && value < 0.001) {
     const s = value.toFixed(20);
     const firstDigitIndex = s.search(/[1-9]/);
-    const numZeros = firstDigitIndex - 2;
-    if (numZeros >= 3) {
-      const remainingDigits = s.substring(firstDigitIndex, firstDigitIndex + (compact ? 3 : 7));
-      return `0.0₍${numZeros}₎${remainingDigits}`;
+    if (firstDigitIndex >= 0) {
+      const numZeros = firstDigitIndex - 2;
+      if (numZeros >= 3) {
+        const remainingDigits = s.substring(firstDigitIndex, firstDigitIndex + (compact ? 3 : 7));
+        return `0.0₍${numZeros}₎${remainingDigits}`;
+      }
     }
   }
 
