@@ -1,6 +1,7 @@
 import type {Metadata, Viewport} from 'next';
 import { Toaster } from "@/components/ui/toaster"
 import { ThemeProvider } from "@/lib/theme-provider"
+import { IgnoreExtensionErrors } from "@/components/ignore-extension-errors"
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -28,6 +29,7 @@ export default function RootLayout({
         <link rel="icon" href="/v2.svg"/>
       </head>
       <body className="font-body antialiased">
+        <IgnoreExtensionErrors />
         <ThemeProvider
           attribute="class"
           defaultTheme="dark"

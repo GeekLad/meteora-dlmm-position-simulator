@@ -86,7 +86,7 @@ export const getIdFromPrice = (
 export type DepositSide = 'both' | 'quote' | 'base';
 
 const DUST_AMOUNT = 1e-9;
-const DEFAULT_POSITION_BINS = 69;
+export const DEFAULT_POSITION_BINS = 70;
 
 export function depositSide(baseAmount: number, quoteAmount: number): DepositSide {
   const hasBase = baseAmount > DUST_AMOUNT;

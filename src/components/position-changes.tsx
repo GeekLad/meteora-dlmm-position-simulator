@@ -16,9 +16,14 @@ import {
   amountsInBinRange,
   binsForPosition,
   describeTransaction,
+  findBreakevenBaseAmount,
+  findBreakevenMaxPrice,
+  formatRealizedPnl,
+  measureRemoval,
   newSimulatedPositionAddress,
   newTxId,
   replayTransactions,
+  summarizeTransactionEconomics,
   type LiquiditySlice,
   type ReplayOptions,
   type SimulatedTransaction,
@@ -26,7 +31,7 @@ import {
 } from '@/lib/position-transactions';
 import { RangeEditor } from '@/components/range-editor';
 import { RemovalRangePicker } from '@/components/removal-range-picker';
-import { getIdFromPrice, getPriceFromId, pairAmountForStrategy, rangeForDeposit, type Strategy } from '@/lib/dlmm';
+import { DEFAULT_POSITION_BINS, depositSide, getIdFromPrice, getPriceFromId, pairAmountForStrategy, rangeForDeposit, type DepositSide, type Strategy } from '@/lib/dlmm';
 import { cn } from '@/lib/utils';
 
 export interface ChangeFocus {
@@ -40,6 +45,7 @@ interface PositionChangesProps {
   currentPrice: number;
   initialPrice: number;
   tokenSymbols: { base: string; quote: string };
+  tokenIcons?: { base?: string; quote?: string };
   defaultLowerPrice: number;
   defaultUpperPrice: number;
   defaultStrategy?: Strategy;
@@ -55,6 +61,8 @@ interface PositionChangesProps {
   onDeletePosition: (positionAddress: string) => void;
   onRestore: () => void;
   onFocusHandled: () => void;
+  onInitialPriceChange?: (price: number) => void;
+  poolStartPrice?: number | null;
   emptyHint?: string;
   showRestore?: boolean;
 }
@@ -110,6 +118,7 @@ export function PositionChanges({
   currentPrice,
   initialPrice,
   tokenSymbols,
+  tokenIcons,
   defaultLowerPrice,
   defaultUpperPrice,
   defaultStrategy = 'spot',
@@ -125,6 +134,8 @@ export function PositionChanges({
   onDeletePosition,
   onRestore,
   onFocusHandled,
+  onInitialPriceChange,
+  poolStartPrice = null,
   emptyHint,
   showRestore = true,
 }: PositionChangesProps) {
@@ -140,9 +151,14 @@ export function PositionChanges({
   const [removePct, setRemovePct] = useState(100);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [autoFill, setAutoFill] = useState(false);
+  const [extendToBreakeven, setExtendToBreakeven] = useState(false);
+  const [reclaimRemovedBase, setReclaimRemovedBase] = useState(false);
+  const preReclaimBaseRef = useRef<string>('');
+  const preBreakevenRangeRef = useRef<{ lowerPrice: string; upperPrice: string; baseAmount: string } | null>(null);
   const lastAutoFilled = useRef<'base' | 'quote' | null>(null);
   const rangeTouchedRef = useRef(false);
   const skipEmptyFormRef = useRef(false);
+  const lastDepositSideRef = useRef<DepositSide | null>(null);
 
   const positionTitle = (position: WalletPositionDetail) => positionDisplayName(position, positions);
 
@@ -196,10 +212,10 @@ export function PositionChanges({
       );
       if (maxId >= minId) return maxId - minId + 1;
     }
-    return 69;
+    return DEFAULT_POSITION_BINS;
   }, [positions, binStep, defaultLowerPrice, defaultUpperPrice, baseDecimals, quoteDecimals, applyDecimalAdjustment]);
 
-  const seedCreateRange = () => {
+  const seedCreateRange = (sideOverride?: DepositSide) => {
     const template = positions[0];
     if (template && template.upperBinId >= template.lowerBinId && binStep > 0) {
       setLowerPrice(String(getPriceFromId(
@@ -217,15 +233,17 @@ export function PositionChanges({
         applyDecimalAdjustment
       )));
       rangeTouchedRef.current = false;
+      lastDepositSideRef.current = sideOverride ?? 'both';
       return;
     }
-    const anchorPrice = initialPrice > 0 ? initialPrice : currentPrice;
+    const anchorPrice = currentPrice > 0 ? currentPrice : initialPrice;
     if (anchorPrice > 0 && binStep > 0) {
+      const side = sideOverride ?? depositSide(Number(baseAmount) || 0, Number(quoteAmount) || 0);
       const range = rangeForDeposit({
         currentPrice: anchorPrice,
         binStep,
-        widthBins: templateWidthBins,
-        side: 'both',
+        widthBins: DEFAULT_POSITION_BINS,
+        side,
         baseDecimals,
         quoteDecimals,
         applyDecimalAdjustment,
@@ -233,11 +251,13 @@ export function PositionChanges({
       setLowerPrice(String(range.lowerPrice));
       setUpperPrice(String(range.upperPrice));
       rangeTouchedRef.current = false;
+      lastDepositSideRef.current = side;
       return;
     }
     setLowerPrice(String(defaultLowerPrice || currentPrice * 0.95));
     setUpperPrice(String(defaultUpperPrice || currentPrice * 1.05));
     rangeTouchedRef.current = false;
+    lastDepositSideRef.current = sideOverride ?? 'both';
   };
 
   const closeForm = () => {
@@ -245,10 +265,13 @@ export function PositionChanges({
     setBaseAmount('');
     setQuoteAmount('');
     setAutoFill(false);
+    setExtendToBreakeven(false);
+    setReclaimRemovedBase(false);
+    preBreakevenRangeRef.current = null;
     lastAutoFilled.current = null;
     rangeTouchedRef.current = false;
     if (positions.length === 0 && !skipEmptyFormRef.current) {
-      seedCreateRange();
+      seedCreateRange('both');
       setActiveForm('add-position');
     } else {
       setActiveForm(null);
@@ -272,7 +295,7 @@ export function PositionChanges({
       return;
     }
     if (activeForm !== 'add-position') {
-      seedCreateRange();
+      seedCreateRange('both');
       setActiveForm('add-position');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -307,9 +330,39 @@ export function PositionChanges({
     if (activeForm !== 'add-position' || editingId) return;
     if (rangeTouchedRef.current) return;
     seedCreateRange();
-    // Keep an unedited Create range on the position/template bounds, not the shocked price.
+    // Do not re-center when the initial price is dragged — that would
+    // prevent placing the price outside the range.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeForm, editingId, templateWidthBins, positions.length, initialPrice]);
+  }, [activeForm, editingId, templateWidthBins, positions.length]);
+
+  useEffect(() => {
+    if (activeForm !== 'add-position' || editingId) return;
+    if (!(binStep > 0) || !(currentPrice > 0)) return;
+    const side = depositSide(Number(baseAmount) || 0, Number(quoteAmount) || 0);
+    if (lastDepositSideRef.current === side) return;
+    lastDepositSideRef.current = side;
+    const range = rangeForDeposit({
+      currentPrice,
+      binStep,
+      widthBins: DEFAULT_POSITION_BINS,
+      side,
+      baseDecimals,
+      quoteDecimals,
+      applyDecimalAdjustment,
+    });
+    setLowerPrice(String(range.lowerPrice));
+    setUpperPrice(String(range.upperPrice));
+  }, [
+    activeForm,
+    editingId,
+    baseAmount,
+    quoteAmount,
+    binStep,
+    currentPrice,
+    baseDecimals,
+    quoteDecimals,
+    applyDecimalAdjustment,
+  ]);
 
   const selected = useMemo(
     () => positions.find(position => position.positionAddress === positionAddress),
@@ -327,14 +380,20 @@ export function PositionChanges({
     return null;
   }, [activeForm, lowerPrice, upperPrice, selected]);
 
-  const fillPairedAmount = (known: 'base' | 'quote', amount: number) => {
-    if (!autoFill || !autoFillRange || !(amount > 0) || !(binStep > 0) || !(currentPrice > 0)) return;
+  const fillPairedAmount = (
+    known: 'base' | 'quote',
+    amount: number,
+    range = autoFillRange,
+    force = false
+  ) => {
+    if (!force && !autoFill) return;
+    if (!range || !(amount > 0) || !(binStep > 0) || !(currentPrice > 0)) return;
     const paired = pairAmountForStrategy({
       strategy,
       binStep,
       activePrice: currentPrice,
-      lowerPrice: autoFillRange.lower,
-      upperPrice: autoFillRange.upper,
+      lowerPrice: range.lower,
+      upperPrice: range.upper,
       known,
       amount,
       baseDecimals,
@@ -344,6 +403,36 @@ export function PositionChanges({
     if (known === 'base') setQuoteAmount(paired.quoteAmount ? String(paired.quoteAmount) : '0');
     else setBaseAmount(paired.baseAmount ? String(paired.baseAmount) : '0');
     lastAutoFilled.current = known === 'base' ? 'quote' : 'base';
+  };
+
+  const onAutoFillChange = (checked: boolean) => {
+    setAutoFill(checked);
+    if (!checked || activeForm !== 'add-position') return;
+    const base = Number(baseAmount) || 0;
+    const quote = Number(quoteAmount) || 0;
+    const onlyBase = base > 0 && quote <= 0;
+    const onlyQuote = quote > 0 && base <= 0;
+    if (!onlyBase && !onlyQuote) return;
+    if (!(binStep > 0) || !(currentPrice > 0)) return;
+
+    const centered = rangeForDeposit({
+      currentPrice,
+      binStep,
+      widthBins: DEFAULT_POSITION_BINS,
+      side: 'both',
+      baseDecimals,
+      quoteDecimals,
+      applyDecimalAdjustment,
+    });
+    lastDepositSideRef.current = 'both';
+    setLowerPrice(String(centered.lowerPrice));
+    setUpperPrice(String(centered.upperPrice));
+    fillPairedAmount(
+      onlyBase ? 'base' : 'quote',
+      onlyBase ? base : quote,
+      { lower: centered.lowerPrice, upper: centered.upperPrice },
+      true
+    );
   };
 
   useEffect(() => {
@@ -360,12 +449,14 @@ export function PositionChanges({
 
   const onBaseAmountChange = (value: string) => {
     setBaseAmount(value);
+    if (extendToBreakeven) breakevenDriverRef.current = 'amounts';
     const amount = Number(value);
     if (autoFill && amount > 0) fillPairedAmount('base', amount);
   };
 
   const onQuoteAmountChange = (value: string) => {
     setQuoteAmount(value);
+    if (extendToBreakeven) breakevenDriverRef.current = 'amounts';
     const amount = Number(value);
     if (autoFill && amount > 0) fillPairedAmount('quote', amount);
   };
@@ -411,6 +502,260 @@ export function PositionChanges({
     };
   }, [selected, activeForm, removePct, removalRangeIds, removalBins]);
 
+  const removalEconomics = useMemo(() => {
+    if (activeForm !== 'remove-liquidity' || !replayOptions || !positionAddress) return null;
+    const txs = editingId ? transactions.filter(tx => tx.id !== editingId) : transactions;
+    const slices = replayTransactions(baseSlices, txs, replayOptions);
+    const targets = slices.filter(slice => slice.positionAddress === positionAddress);
+    return measureRemoval(targets, {
+      id: 'preview',
+      type: 'remove-liquidity',
+      price: currentPrice,
+      strategy,
+      baseAmount: 0,
+      quoteAmount: 0,
+      lowerPrice: Number(lowerPrice) || selected?.minPrice || 0,
+      upperPrice: Number(upperPrice) || selected?.maxPrice || 0,
+      positionAddress,
+      removeBps: Math.round(removePct * 100),
+    }, replayOptions);
+  }, [
+    activeForm,
+    replayOptions,
+    positionAddress,
+    editingId,
+    transactions,
+    baseSlices,
+    currentPrice,
+    strategy,
+    lowerPrice,
+    upperPrice,
+    selected,
+    removePct,
+  ]);
+
+  const txLedger = useMemo(() => {
+    if (!replayOptions) return null;
+    return summarizeTransactionEconomics(baseSlices, transactions, replayOptions);
+  }, [replayOptions, baseSlices, transactions]);
+
+  const walletSlices = useMemo(() => {
+    if (!replayOptions) return [];
+    return replayTransactions(baseSlices, transactions, replayOptions);
+  }, [replayOptions, baseSlices, transactions]);
+
+  const isDepositForm = activeForm === 'add-position' || activeForm === 'add-liquidity';
+
+  // "Adjust position to break even": keeps the position breaking even as
+  // inputs change. Amount/strategy edits re-solve the top (smallest upper
+  // bound whose exit value recovers the invested capital); range edits
+  // re-solve the base needed at that top.
+  const breakevenPrice = useMemo(() => {
+    if (!replayOptions || !walletSlices.length) return null;
+    const txs = editingId ? transactions.filter(tx => tx.id !== editingId) : transactions;
+    return findBreakevenMaxPrice({
+      baseSlices,
+      transactions: txs,
+      replay: replayOptions,
+      strategy,
+      baseAmount: Number(baseAmount) || 0,
+      quoteAmount: Number(quoteAmount) || 0,
+      lowerPrice: Number(lowerPrice) || 0,
+      upperPrice: Number(upperPrice) || 0,
+      currentPrice,
+    });
+  }, [
+    replayOptions,
+    walletSlices.length,
+    baseSlices,
+    transactions,
+    txLedger,
+    editingId,
+    strategy,
+    baseAmount,
+    quoteAmount,
+    lowerPrice,
+    upperPrice,
+    currentPrice,
+    binStep,
+    baseDecimals,
+    quoteDecimals,
+    applyDecimalAdjustment,
+  ]);
+
+  const breakevenBinId = useMemo(() => {
+    if (!(binStep > 0) || !breakevenPrice) return null;
+    const id = getIdFromPrice(
+      breakevenPrice,
+      binStep,
+      baseDecimals,
+      quoteDecimals,
+      applyDecimalAdjustment
+    );
+    return id > 0 ? id : null;
+  }, [binStep, breakevenPrice, baseDecimals, quoteDecimals, applyDecimalAdjustment]);
+
+  // Offered whenever the position is at a loss and the deposit buys base
+  // above the current price — the mode then keeps the position breaking even
+  // at the range top as inputs change.
+  const canExtendToBreakeven = Boolean(
+    (activeForm === 'add-position' || activeForm === 'add-liquidity')
+    && breakevenBinId != null
+    && breakevenBinId > getIdFromPrice(currentPrice, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment)
+  );
+
+  // Base tokens removed and not yet redeployed can be bought back below their
+  // original bins when price is lower, so reinvesting them recovers part of
+  // the realized loss. The ledger nets later deposits against removals, so a
+  // reinvested credit disappears once the base has been redeployed. The value
+  // is rounded to the fill precision so "Use max" and the entered-amount
+  // comparison agree, and sub-dust residuals count as no credit.
+  const reclaimableBase = useMemo(() => {
+    if (!replayOptions) return 0;
+    const txs = editingId ? transactions.filter(tx => tx.id !== editingId) : transactions;
+    const ledger = summarizeTransactionEconomics(baseSlices, txs, replayOptions);
+    const net = (ledger?.removedBase ?? 0) - (ledger?.reinvestedBase ?? 0);
+    return net > 1e-8 ? Number(net.toPrecision(9)) : 0;
+  }, [txLedger, editingId, transactions, baseSlices, replayOptions]);
+
+  const canReclaimRemovedBase = Boolean(
+    isDepositForm && reclaimableBase > DUST
+  );
+
+  // Which form input changed last while the breakeven mode is on. Range edits
+  // re-solve the base amount; amount/strategy edits re-solve the upper bound.
+  const breakevenDriverRef = useRef<'range' | 'amounts' | 'strategy' | null>(null);
+
+  const applySolvedBaseForUpper = (upper: number, lower: number) => {
+    if (!replayOptions || !(upper > 0)) return;
+    const txs = editingId ? transactions.filter(tx => tx.id !== editingId) : transactions;
+    const solvedBase = findBreakevenBaseAmount({
+      baseSlices,
+      transactions: txs,
+      replay: replayOptions,
+      strategy,
+      baseAmount: Number(baseAmount) || 0,
+      quoteAmount: Number(quoteAmount) || 0,
+      lowerPrice: lower > 0 ? lower : currentPrice,
+      upperPrice: upper,
+      currentPrice,
+    });
+    if (solvedBase == null) return;
+    setBaseAmount(String(Number(solvedBase.toPrecision(9))));
+    if (autoFill) {
+      fillPairedAmount('base', solvedBase, { lower: lower > 0 ? lower : currentPrice, upper }, true);
+    } else if (Number(quoteAmount) <= 0 && quoteAmount.trim() !== '') {
+      setQuoteAmount('');
+    }
+    lastAutoFilled.current = null;
+  };
+
+  const applyBreakevenAdjustment = () => {
+    if (!extendToBreakeven || !replayOptions) return;
+    if (!(binStep > 0) || !(currentPrice > 0)) return;
+    const driver = breakevenDriverRef.current;
+
+    if (driver === 'amounts' || driver === 'strategy') {
+      // Amounts/strategy seed the preview; set upper to the smallest top
+      // whose exit value recovers the invested capital, then solve base for
+      // that top so what gets submitted still breaks even there.
+      const txs = editingId ? transactions.filter(tx => tx.id !== editingId) : transactions;
+      const maxPrice = findBreakevenMaxPrice({
+        baseSlices,
+        transactions: txs,
+        replay: replayOptions,
+        strategy,
+        baseAmount: Number(baseAmount) || 0,
+        quoteAmount: Number(quoteAmount) || 0,
+        lowerPrice: Number(lowerPrice) || 0,
+        upperPrice: Number(upperPrice) || 0,
+        currentPrice,
+      });
+      if (maxPrice != null) {
+        const activeId = getIdFromPrice(currentPrice, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+        const targetId = Math.max(
+          getIdFromPrice(maxPrice, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment),
+          activeId + 1
+        );
+        const upper = getPriceFromId(targetId, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+        const lower = Number(lowerPrice) || currentPrice;
+        setUpperPrice(String(upper));
+        applySolvedBaseForUpper(upper, lower);
+      }
+      breakevenDriverRef.current = null;
+      return;
+    }
+
+    // Range changed (or first activation): keep the range, solve the base
+    // amount that breaks even at the top of the range. With Auto-Fill on, the
+    // quote side follows the solved base so the paired ratio stays consistent.
+    applySolvedBaseForUpper(Number(upperPrice) || 0, Number(lowerPrice) || 0);
+    breakevenDriverRef.current = null;
+  };
+
+  const onExtendToBreakevenChange = (checked: boolean) => {
+    setExtendToBreakeven(checked);
+    if (!checked) {
+      if (preBreakevenRangeRef.current) {
+        setLowerPrice(preBreakevenRangeRef.current.lowerPrice);
+        setUpperPrice(preBreakevenRangeRef.current.upperPrice);
+        setBaseAmount(preBreakevenRangeRef.current.baseAmount);
+        preBreakevenRangeRef.current = null;
+      }
+      return;
+    }
+    if (!(binStep > 0) || !(currentPrice > 0) || breakevenBinId == null) return;
+    preBreakevenRangeRef.current = { lowerPrice, upperPrice, baseAmount };
+    const activeId = getIdFromPrice(currentPrice, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+    const minId = getIdFromPrice(Number(lowerPrice) || currentPrice, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+    const targetId = Math.max(breakevenBinId, activeId + 1);
+    const upper = getPriceFromId(targetId, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+    setUpperPrice(String(upper));
+    // Keep the extension anchored at the active bin so the submitted range
+    // matches the shape the breakeven was solved for.
+    let lower = Number(lowerPrice) || currentPrice;
+    if (Number(lowerPrice) > 0 && minId > activeId) {
+      lower = getPriceFromId(activeId, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment);
+      setLowerPrice(String(lower));
+    }
+    // Always re-solve the base for the new top: the amount entered for the
+    // old range no longer breaks even there.
+    breakevenDriverRef.current = 'range';
+  };
+
+  // While the breakeven mode is on, react to whichever input changed last
+  // (flagged via breakevenDriverRef) once per change.
+  useEffect(() => {
+    if (!extendToBreakeven || !breakevenDriverRef.current) return;
+    applyBreakevenAdjustment();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [extendToBreakeven, lowerPrice, upperPrice, baseAmount, quoteAmount, strategy]);
+
+  // Reinvest the removed-base credit: fill the base field with the net
+  // amount still sitting outside positions. While the breakeven mode is on,
+  // flag the amounts driver so the range re-adjusts to the refilled amount —
+  // e.g. after range edits shrank the base below the removed amount, the
+  // upper bound must come back down to the breakeven level.
+  const onReclaimRemovedBase = () => {
+    preReclaimBaseRef.current = baseAmount;
+    setReclaimRemovedBase(true);
+    if (extendToBreakeven && (Number(baseAmount) || 0) < reclaimableBase - DUST) {
+      breakevenDriverRef.current = 'amounts';
+    }
+    setBaseAmount(String(Number(reclaimableBase.toPrecision(9))));
+    if (quoteAmount.trim() !== '') setQuoteAmount('');
+  };
+
+  const reclaimRemovedBaseHint = useMemo(() => {
+    if (!canReclaimRemovedBase || !(currentPrice > 0)) return null;
+    return { quoteNeeded: reclaimableBase * currentPrice };
+  }, [canReclaimRemovedBase, currentPrice, reclaimableBase]);
+
+  const reinvestDisabled = Boolean(
+    !canReclaimRemovedBase
+    || (Number(baseAmount) || 0) >= reclaimableBase - DUST
+  );
+
   const apply = () => {
     const price = currentPrice;
     if (!Number.isFinite(price) || price <= 0 || !activeForm) return;
@@ -438,9 +783,10 @@ export function PositionChanges({
     const quote = Number(quoteAmount) || 0;
     if (base <= 0 && quote <= 0) return;
 
+    const minP = Number(lowerPrice);
+    const maxP = Number(upperPrice);
+
     if (activeForm === 'add-position') {
-      const minP = Number(lowerPrice);
-      const maxP = Number(upperPrice);
       if (!(minP > 0) || !(maxP > 0) || maxP < minP) return;
       onApply({
         id: editingId ?? newTxId(),
@@ -469,8 +815,8 @@ export function PositionChanges({
       strategy,
       baseAmount: base,
       quoteAmount: quote,
-      lowerPrice: selected?.minPrice ?? 0,
-      upperPrice: selected?.maxPrice ?? 0,
+      lowerPrice: minP > 0 ? minP : (selected?.minPrice ?? 0),
+      upperPrice: maxP > 0 ? maxP : (selected?.maxPrice ?? 0),
       positionAddress,
       removeBps: 0,
     });
@@ -488,6 +834,31 @@ export function PositionChanges({
     setRemovePct(tx.removeBps / 100);
     setEditingId(tx.id);
     setActiveForm(tx.type);
+    
+    // Auto-enable breakeven if the range top matches the breakeven price
+    if (tx.type === 'add-position' || tx.type === 'add-liquidity') {
+      const bePrice = findBreakevenMaxPrice({
+        baseSlices,
+        transactions: transactions.filter(t => t.id !== tx.id),
+        replay: replayOptions || { binStep: 0, baseDecimals: 0, quoteDecimals: 0, applyDecimalAdjustment: false, activeBinId: 0 },
+        strategy: tx.strategy,
+        baseAmount: tx.baseAmount,
+        quoteAmount: tx.quoteAmount,
+        lowerPrice: tx.lowerPrice,
+        upperPrice: tx.upperPrice,
+        currentPrice,
+      });
+      if (bePrice && Math.abs(bePrice - tx.upperPrice) < 1e-9) {
+        setExtendToBreakeven(true);
+      } else {
+        setExtendToBreakeven(false);
+      }
+    } else {
+      setExtendToBreakeven(false);
+    }
+
+    setReclaimRemovedBase(false);
+    preBreakevenRangeRef.current = null;
     window.scrollTo({ top: 0, behavior: 'auto' });
   };
 
@@ -510,6 +881,25 @@ export function PositionChanges({
     setStrategy(defaultStrategy);
     setEditingId(`tx-${address}`);
     setActiveForm('add-position');
+
+    // Check if this initial simulated position should have breakeven enabled
+    const bePrice = findBreakevenMaxPrice({
+      baseSlices,
+      transactions: [],
+      replay: replayOptions || { binStep: 0, baseDecimals: 0, quoteDecimals: 0, applyDecimalAdjustment: false, activeBinId: 0 },
+      strategy: defaultStrategy,
+      baseAmount: position.baseAmount,
+      quoteAmount: position.quoteAmount,
+      lowerPrice: position.minPrice,
+      upperPrice: position.maxPrice,
+      currentPrice,
+    });
+    if (bePrice && Math.abs(bePrice - position.maxPrice) < 1e-9) {
+      setExtendToBreakeven(true);
+    } else {
+      setExtendToBreakeven(false);
+    }
+
     window.scrollTo({ top: 0, behavior: 'auto' });
   };
 
@@ -518,8 +908,11 @@ export function PositionChanges({
     setBaseAmount('');
     setQuoteAmount('');
     setAutoFill(false);
+    setExtendToBreakeven(false);
+    setReclaimRemovedBase(false);
+    preBreakevenRangeRef.current = null;
     lastAutoFilled.current = null;
-    seedCreateRange();
+    seedCreateRange('both');
     setActiveForm('add-position');
     window.scrollTo({ top: 0, behavior: 'auto' });
   };
@@ -529,6 +922,9 @@ export function PositionChanges({
     setBaseAmount('');
     setQuoteAmount('');
     setAutoFill(false);
+    setExtendToBreakeven(false);
+    setReclaimRemovedBase(false);
+    preBreakevenRangeRef.current = null;
     lastAutoFilled.current = null;
     setPositionAddress(address);
     setActiveForm('add-liquidity');
@@ -613,10 +1009,21 @@ export function PositionChanges({
               quoteDecimals={quoteDecimals}
               applyDecimalAdjustment={applyDecimalAdjustment}
               onChange={(nextMin, nextMax) => {
-                rangeTouchedRef.current = true;
                 setLowerPrice(String(nextMin));
                 setUpperPrice(String(nextMax));
+                rangeTouchedRef.current = true;
+                if (extendToBreakeven) breakevenDriverRef.current = 'range';
               }}
+              onInitialPriceChange={
+                positions.length === 0 && transactions.length === 0
+                  ? onInitialPriceChange
+                  : undefined
+              }
+              defaultInitialPrice={
+                positions.length === 0 && transactions.length === 0
+                  ? poolStartPrice
+                  : null
+              }
             />
           )}
 
@@ -624,7 +1031,11 @@ export function PositionChanges({
             <>
               <div className="grid gap-2">
                 <Label className="text-xs">Strategy</Label>
-                <RadioGroup value={strategy} onValueChange={value => setStrategy(value as Strategy)} className="flex gap-4">
+                <RadioGroup value={strategy} onValueChange={value => {
+                  const next = value as Strategy;
+                  if (extendToBreakeven && next !== strategy) breakevenDriverRef.current = 'strategy';
+                  setStrategy(next);
+                }} className="flex gap-4">
                   <div className="flex items-center space-x-2">
                     <RadioGroupItem value="spot" id="chg-spot" />
                     <Label htmlFor="chg-spot" className="cursor-pointer text-sm">Spot</Label>
@@ -641,8 +1052,53 @@ export function PositionChanges({
               </div>
               <div className="flex items-center justify-between rounded-lg border border-border/50 bg-secondary/50 p-2 lg:p-3">
                 <Label htmlFor="chg-autoFill" className="cursor-pointer text-sm font-medium">Auto-Fill</Label>
-                <Switch id="chg-autoFill" checked={autoFill} onCheckedChange={setAutoFill} />
+                <Switch id="chg-autoFill" checked={autoFill} onCheckedChange={onAutoFillChange} />
               </div>
+              {isDepositForm && (extendToBreakeven || canExtendToBreakeven) && (
+                <div className="flex items-center justify-between gap-2 rounded-lg border border-primary/20 bg-primary/5 p-2 lg:p-3">
+                  <div className="min-w-0">
+                    <Label htmlFor="chg-extendToBreakeven" className="cursor-pointer text-sm font-medium">
+                      Adjust position to break even
+                    </Label>
+                    <p className="text-[11px] leading-tight text-muted-foreground">
+                      {breakevenPrice
+                        ? `Sets the range top to ${formatNumberForDisplay(breakevenPrice, { maximumFractionDigits: 6 })} with ${formatNumberForDisplay(Number(baseAmount) || 0, { maximumFractionDigits: 6 })} ${tokenSymbols.base}.`
+                        : ''}
+                    </p>
+                  </div>
+                  <Switch
+                    id="chg-extendToBreakeven"
+                    checked={extendToBreakeven}
+                    onCheckedChange={onExtendToBreakevenChange}
+                  />
+                </div>
+              )}
+              {isDepositForm && canReclaimRemovedBase && (
+                <div className="rounded-lg border border-primary/20 bg-primary/5 p-2 lg:p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <Label htmlFor="chg-reinvestRemovedBase" className="text-sm font-medium">
+                        Reinvest removed {tokenSymbols.base}
+                      </Label>
+                      <p className="text-[11px] leading-tight text-muted-foreground">
+                        {reclaimRemovedBaseHint
+                          ? `Fills the position with ${formatNumberForDisplay(reclaimableBase, { maximumFractionDigits: 6 })} ${tokenSymbols.base} removed in earlier steps (≈${formatNumberForDisplay(reclaimRemovedBaseHint.quoteNeeded, { maximumFractionDigits: 4 })} ${tokenSymbols.quote} at current price).`
+                          : ''}
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8 shrink-0"
+                      disabled={reinvestDisabled}
+                      onClick={onReclaimRemovedBase}
+                    >
+                      Reinvest {tokenSymbols.base}
+                    </Button>
+                  </div>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-2">
                 <div className="grid gap-1.5">
                   <Label className="text-xs">{tokenSymbols.base}</Label>
@@ -677,6 +1133,7 @@ export function PositionChanges({
                   quoteDecimals={quoteDecimals}
                   applyDecimalAdjustment={applyDecimalAdjustment}
                   tokenSymbols={tokenSymbols}
+                  tokenIcons={tokenIcons}
                   removePct={removePct}
                   onRangeChange={(nextMin, nextMax) => {
                     setLowerPrice(String(nextMin));
@@ -705,7 +1162,7 @@ export function PositionChanges({
                   onValueChange={([value]) => setRemovePct(value)}
                 />
                 {removalPreview && (
-                  <div className="rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs">
+                  <div className="rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs space-y-1">
                     <TokenAmounts
                       base={removalPreview.base}
                       quote={removalPreview.quote}
@@ -713,6 +1170,22 @@ export function PositionChanges({
                       symbols={tokenSymbols}
                       prefix="Removes "
                     />
+                    {removalEconomics && (
+                      <div className={cn(
+                        'font-medium',
+                        removalEconomics.proceeds - removalEconomics.costBasis > 1e-9
+                          ? 'text-green-400'
+                          : removalEconomics.proceeds - removalEconomics.costBasis < -1e-9
+                            ? 'text-red-400'
+                            : 'text-muted-foreground'
+                      )}>
+                        {formatRealizedPnl(
+                          removalEconomics.proceeds - removalEconomics.costBasis,
+                          tokenSymbols.quote
+                        )}
+                        {' '}at {formatNumberForDisplay(currentPrice, { maximumFractionDigits: 6 })}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -735,8 +1208,9 @@ export function PositionChanges({
           </Button>
           {activeForm === 'add-position' && (
             <p className="text-[11px] text-muted-foreground">
-              New liquidity uses the simulated current price for bin shape and cost basis.
-              One-sided quote is placed at or below that price; one-sided base at or above.
+              {positions.length === 0 && transactions.length === 0
+                ? 'The initial price sets cost basis and how liquidity is split across the range. Drag it outside the min/max handles for a one-sided deposit.'
+                : 'New liquidity uses the simulated current price for bin shape and cost basis. One-sided quote is placed at or below that price; one-sided base at or above.'}
             </p>
           )}
         </div>
@@ -764,6 +1238,13 @@ export function PositionChanges({
               )}
             </div>
           </div>
+
+          {showRestore && transactions.length === 0 && (
+            <p className="rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs leading-snug">
+              <span className="font-semibold">Set the initial price</span>
+              {' '}on the Analysis chart. It is the cost basis for these loaded wallet positions and locks after the first simulated transaction.
+            </p>
+          )}
 
           <div className="space-y-2">
             {positions.length === 0 && (
@@ -864,7 +1345,10 @@ export function PositionChanges({
             <div className="space-y-2 border-t border-border/50 pt-3">
               <div className="text-sm font-medium">Simulated transaction log</div>
               <div className="space-y-2">
-                {transactions.map((tx, index) => (
+                {transactions.map((tx, index) => {
+                  const economics = txLedger?.perTx[index];
+                  const realized = economics?.realizedPnl ?? 0;
+                  return (
                   <div key={tx.id} className="rounded-md border bg-secondary/30 p-2 text-xs">
                     <div className="flex items-start justify-between gap-2">
                       <div>
@@ -875,6 +1359,14 @@ export function PositionChanges({
                         <p className="mt-1 text-muted-foreground">
                           {describeTransaction(tx, tokenSymbols)}
                         </p>
+                        {tx.type === 'remove-liquidity' && economics && (
+                          <p className={cn(
+                            'mt-0.5 font-medium',
+                            realized > 1e-9 ? 'text-green-400' : realized < -1e-9 ? 'text-red-400' : 'text-muted-foreground'
+                          )}>
+                            {formatRealizedPnl(realized, tokenSymbols.quote)}
+                          </p>
+                        )}
                         <p className="mt-0.5 font-mono text-muted-foreground">
                           {txPositionLabel(tx.positionAddress)}
                         </p>
@@ -889,7 +1381,8 @@ export function PositionChanges({
                       </div>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}

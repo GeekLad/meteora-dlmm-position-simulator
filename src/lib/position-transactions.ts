@@ -69,6 +69,146 @@ export function costBasis(bins: SimulatedBin[], scale = 1): number {
   return bins.reduce((sum, bin) => sum + bin.initialValueInQuote * scale, 0);
 }
 
+export interface TxEconomics {
+  costBasis: number;
+  proceeds: number;
+  realizedPnl: number;
+}
+
+export interface TransactionLedger {
+  perTx: TxEconomics[];
+  originalCost: number;
+  deposits: number;
+  withdrawals: number;
+  removedCost: number;
+  /** Net base removed and not yet redeployed — the reinvestable credit. */
+  removedBase: number;
+  /** Base tokens already redeployed by later simulated deposits. */
+  reinvestedBase: number;
+  /** Quote value of those redeposited tokens at their deposit price. */
+  reinvestedValue: number;
+  realizedPnl: number;
+}
+
+function removalBounds(tx: SimulatedTransaction, replay: ReplayOptions): { minBinId: number; maxBinId: number } {
+  if (!(tx.lowerPrice > 0 && tx.upperPrice > 0)) {
+    return { minBinId: Number.NEGATIVE_INFINITY, maxBinId: Number.POSITIVE_INFINITY };
+  }
+  const lo = Math.min(tx.lowerPrice, tx.upperPrice);
+  const hi = Math.max(tx.lowerPrice, tx.upperPrice);
+  return {
+    minBinId: getIdFromPrice(lo, replay.binStep, replay.baseDecimals, replay.quoteDecimals, replay.applyDecimalAdjustment),
+    maxBinId: getIdFromPrice(hi, replay.binStep, replay.baseDecimals, replay.quoteDecimals, replay.applyDecimalAdjustment),
+  };
+}
+
+/** Cost basis, mark-to-market proceeds, and removed base tokens of a removal at `tx.price`. */
+export function measureRemoval(
+  targets: LiquiditySlice[],
+  tx: SimulatedTransaction,
+  replay: ReplayOptions
+): { costBasis: number; proceeds: number; removedBase: number } {
+  const factorRemoved = Math.min(1, Math.max(0, tx.removeBps / 10000));
+  if (factorRemoved <= 0 || targets.length === 0) {
+    return { costBasis: 0, proceeds: 0, removedBase: 0 };
+  }
+  const { minBinId, maxBinId } = removalBounds(tx, replay);
+  let costBasisValue = 0;
+  let proceeds = 0;
+  let removedBase = 0;
+  for (const slice of targets) {
+    if (slice.scale <= 0) continue;
+    const scaled = scaleBins(slice.bins, slice.scale);
+    const simulated = runSimulation(scaled, tx.price, slice.openedAtPrice).simulatedBins;
+    const coversSlice = minBinId <= slice.lowerBinId && maxBinId >= slice.upperBinId;
+    const bins = coversSlice
+      ? simulated
+      : simulated.filter(bin => bin.id >= minBinId && bin.id <= maxBinId);
+    for (const bin of bins) {
+      costBasisValue += bin.initialValueInQuote * factorRemoved;
+      proceeds += bin.currentValueInQuote * factorRemoved;
+      if (bin.currentTokenType === 'base') removedBase += bin.currentAmount * factorRemoved;
+    }
+  }
+  return { costBasis: costBasisValue, proceeds, removedBase };
+}
+
+export function summarizeTransactionEconomics(
+  baseSlices: LiquiditySlice[],
+  transactions: SimulatedTransaction[],
+  replay: ReplayOptions
+): TransactionLedger {
+  const originalCost = slicesCostBasis(baseSlices);
+  const perTx: TxEconomics[] = [];
+  let deposits = originalCost;
+  let withdrawals = 0;
+  let removedCost = 0;
+  let removedBase = 0;
+  let reinvestedBase = 0;
+  let reinvestedValue = 0;
+  let realizedPnl = 0;
+  let slices = replayTransactions(baseSlices, [], replay);
+
+  for (let i = 0; i < transactions.length; i++) {
+    const tx = transactions[i];
+    if (tx.type === 'remove-liquidity') {
+      const targets = slices.filter(slice => slice.positionAddress === tx.positionAddress);
+      const measured = measureRemoval(targets, tx, replay);
+      const pnl = measured.proceeds - measured.costBasis;
+      perTx.push({ costBasis: measured.costBasis, proceeds: measured.proceeds, realizedPnl: pnl });
+      withdrawals += measured.proceeds;
+      removedCost += measured.costBasis;
+      // Only count removals that increase the net credit; removals below
+      // what was already reinvested claw the credit back down.
+      if (measured.removedBase > reinvestedBase) {
+        removedBase += measured.removedBase - reinvestedBase;
+        reinvestedBase = 0;
+      } else {
+        reinvestedBase -= measured.removedBase;
+      }
+      realizedPnl += pnl;
+    } else {
+      const next = replayTransactions(baseSlices, transactions.slice(0, i + 1), replay);
+      const added = next.filter(slice => slice.id === tx.id);
+      const cost = added.reduce((sum, slice) => sum + costBasis(slice.bins, slice.scale), 0);
+      perTx.push({ costBasis: cost, proceeds: 0, realizedPnl: 0 });
+      deposits += cost;
+      // Deposits consume the reinvestable base credit, capped at what was
+      // actually removed — quote-only or fresh-capital deposits leave it alone.
+      const baseDeposited = added.reduce(
+        (sum, slice) => sum + slice.bins.reduce(
+          (binSum, bin) => (bin.initialTokenType === 'base' ? binSum + bin.initialAmount * slice.scale : binSum),
+          0
+        ),
+        0
+      );
+      if (baseDeposited > 1e-9) {
+        const consumed = Math.min(baseDeposited, removedBase - reinvestedBase);
+        if (consumed > 0) {
+          reinvestedBase += consumed;
+          // Redeposited tokens were valued when withdrawn; at the deposit tx
+          // price they move that much money from pocketed cash into the
+          // position. Neither fresh capital nor a withdrawal anymore.
+          reinvestedValue += consumed * tx.price;
+        }
+      }
+    }
+    slices = replayTransactions(baseSlices, transactions.slice(0, i + 1), replay);
+  }
+
+  return {
+    perTx,
+    originalCost,
+    deposits,
+    withdrawals,
+    removedCost,
+    removedBase,
+    reinvestedBase,
+    reinvestedValue,
+    realizedPnl,
+  };
+}
+
 export function binsToAmounts(bins: SimulatedBin[], useCurrent = false): { base: number; quote: number; value: number } {
   return bins.reduce(
     (acc, bin) => {
@@ -107,6 +247,29 @@ export function analyzeCurrentBins(simulatedBins: SimulatedBin[]): Analysis {
   });
 }
 
+/**
+ * Set each bin's cost basis to the LP mark-to-market at `costPrice`.
+ * Inventory shape is unchanged; only `initialValueInQuote` is updated so
+ * P&L is 0 when the simulated price equals the chosen initial price.
+ */
+export function repriceCostBasis(bins: SimulatedBin[], costPrice: number): SimulatedBin[] {
+  if (!(costPrice > 0) || bins.length === 0) {
+    return bins.map(bin => ({ ...bin, initialValueInQuote: 0 }));
+  }
+  const marked = runSimulation(cloneBins(bins), costPrice, costPrice).simulatedBins;
+  const byId = new Map(marked.map(bin => [bin.id, bin]));
+  return bins.map(bin => {
+    const sim = byId.get(bin.id);
+    return {
+      ...bin,
+      initialValueInQuote:
+        bin.initialAmount > 1e-12 && sim
+          ? sim.currentValueInQuote
+          : 0,
+    };
+  });
+}
+
 export function originalSlices(
   positions: WalletPositionDetail[],
   positionBins: Record<string, SimulatedBin[]>,
@@ -117,7 +280,7 @@ export function originalSlices(
     positionAddress: position.positionAddress,
     isSimulatedPosition: position.isSimulated === true,
     openedAtPrice,
-    bins: cloneBins(positionBins[position.positionAddress] ?? []),
+    bins: repriceCostBasis(positionBins[position.positionAddress] ?? [], openedAtPrice),
     scale: 1,
     minPrice: position.minPrice,
     maxPrice: position.maxPrice,
@@ -242,25 +405,7 @@ function applyRemoveLiquidity(
   replay: ReplayOptions
 ): void {
   const factor = Math.max(0, 1 - tx.removeBps / 10000);
-  const hasRange = tx.lowerPrice > 0 && tx.upperPrice > 0;
-  let minBinId = Number.NEGATIVE_INFINITY;
-  let maxBinId = Number.POSITIVE_INFINITY;
-  if (hasRange) {
-    minBinId = getIdFromPrice(
-      Math.min(tx.lowerPrice, tx.upperPrice),
-      replay.binStep,
-      replay.baseDecimals,
-      replay.quoteDecimals,
-      replay.applyDecimalAdjustment
-    );
-    maxBinId = getIdFromPrice(
-      Math.max(tx.lowerPrice, tx.upperPrice),
-      replay.binStep,
-      replay.baseDecimals,
-      replay.quoteDecimals,
-      replay.applyDecimalAdjustment
-    );
-  }
+  const { minBinId, maxBinId } = removalBounds(tx, replay);
 
   for (const slice of targets) {
     const coversSlice = minBinId <= slice.lowerBinId && maxBinId >= slice.upperBinId;
@@ -319,7 +464,11 @@ export function amountsInBinRange(
   );
 }
 
-function displayBinSpan(slices: LiquiditySlice[]): { minId: number; maxId: number } | null {
+function displayBinSpan(
+  slices: LiquiditySlice[],
+  initialPrice?: number,
+  replay?: ReplayOptions
+): { minId: number; maxId: number } | null {
   const active = slices.filter(slice => slice.scale > 0);
   if (active.length === 0) return null;
 
@@ -342,16 +491,46 @@ function displayBinSpan(slices: LiquiditySlice[]): { minId: number; maxId: numbe
       maxId = Math.max(maxId, slice.upperBinId);
     }
   }
+  // When the portfolio's range tops out below the initial (cost-basis) price,
+  // extend the axis through that bin with empty bins. The gap shows how far
+  // everything currently invested still is from the cost basis.
+  if (
+    typeof initialPrice === 'number' && initialPrice > 0 && replay
+    && Number.isFinite(maxId)
+  ) {
+    const initialBinId = getIdFromPrice(
+      initialPrice,
+      replay.binStep,
+      replay.baseDecimals,
+      replay.quoteDecimals,
+      replay.applyDecimalAdjustment
+    );
+    if (initialBinId > maxId) maxId = initialBinId;
+  }
   if (!Number.isFinite(minId) || !Number.isFinite(maxId) || maxId < minId) return null;
   return { minId, maxId };
 }
+
+
 
 function alignBinsToSpan(
   bins: SimulatedBin[],
   slices: LiquiditySlice[],
   replay: ReplayOptions
 ): SimulatedBin[] {
-  const span = displayBinSpan(slices);
+  // replay.activeBinId holds the cost-basis price bin for chart alignment —
+  // the span extends through it (plus empty gap bins) when the portfolio ends
+  // below it.
+  const initialPrice = replay.activeBinId > 0
+    ? getPriceFromId(
+        replay.activeBinId,
+        replay.binStep,
+        replay.baseDecimals,
+        replay.quoteDecimals,
+        replay.applyDecimalAdjustment
+      )
+    : undefined;
+  const span = displayBinSpan(slices, initialPrice, replay);
   if (!span) return trimEmptyEdgeBins(bins);
   return mergeSimulatedBins([bins], {
     binStep: replay.binStep,
@@ -393,14 +572,10 @@ export function simulateSlices(
   });
 
   if (!replay) return trimEmptyEdgeBins(merged);
-  const currentActiveId = getIdFromPrice(
-    currentPrice,
-    replay.binStep,
-    replay.baseDecimals,
-    replay.quoteDecimals,
-    replay.applyDecimalAdjustment
-  );
-  return alignBinsToSpan(merged, slices, { ...replay, activeBinId: currentActiveId });
+  // alignBinsToSpan needs the cost-basis activeBinId (the initial-price bin)
+  // to extend the chart span past the portfolio when price sits below it, so
+  // pass the original replay; the current-price bin is irrelevant there.
+  return alignBinsToSpan(merged, slices, replay);
 }
 
 export function combineSliceBins(
@@ -425,6 +600,298 @@ export function combineSliceBins(
 
 export function slicesCostBasis(slices: LiquiditySlice[]): number {
   return slices.reduce((sum, slice) => sum + costBasis(slice.bins, slice.scale), 0);
+}
+
+/**
+ * Discrete breakeven for the full position: the lowest bin price at which
+ * mark-to-market value + realized P&L is non-negative versus remaining cost.
+ * Walks liquidity bin prices in order (same bins the chart/PnL use).
+ *
+ * Returns null when there is no remaining liquidity or P&L never reaches zero
+ * by the top of the position (value is monotonic in price for these LP shapes).
+ */
+export function findBreakevenPrice(
+  slices: LiquiditySlice[],
+  remainingCost: number,
+  realizedPnl: number
+): number | null {
+  const active = slices.filter(slice => slice.scale > 0 && slice.bins.some(bin => bin.initialAmount > 1e-12));
+  if (active.length === 0) return null;
+
+  const target = remainingCost - realizedPnl;
+  if (!(target > 1e-12)) return null;
+
+  const priceById = new Map<number, number>();
+  for (const slice of active) {
+    for (const bin of slice.bins) {
+      if (bin.initialAmount > 1e-12 || bin.currentAmount > 1e-12) {
+        priceById.set(bin.id, bin.price);
+      }
+    }
+  }
+  const prices = [...priceById.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, price]) => price)
+    .filter(price => price > 0);
+  if (prices.length === 0) return null;
+
+  const valueAt = (price: number) =>
+    analyzeCurrentBins(simulateSlices(active, price, null)).totalValueInQuote;
+
+  const absTol = Math.max(1e-9, Math.abs(target) * 1e-8);
+  const valueMax = valueAt(prices[prices.length - 1]);
+  if (target > valueMax + absTol) return null;
+
+  for (const price of prices) {
+    if (valueAt(price) + absTol >= target) return price;
+  }
+  return null;
+}
+
+/**
+ * Breakeven target for the solvers: the **net investment** — the capital the
+ * user actually put in. Every deposit adds to it; withdrawals never subtract,
+ * because the withdrawn tokens are still the user's money (they sit as
+ * pocketed cash in the portfolio analysis). Redepositing tokens taken from an
+ * earlier removal moves money from that pocketed cash back into a position,
+ * so the redeposited value is not fresh capital: after withdrawing 5.65 SOL
+ * from a 1000 USDC position and redepositing it, the net investment is still
+ * 1000 USDC, and breakeven is "positions plus pocketed cash together are
+ * worth 1000 USDC".
+ */
+function investedCapital(
+  baseSlices: LiquiditySlice[],
+  transactions: SimulatedTransaction[],
+  replay: ReplayOptions
+): number {
+  if (transactions.length === 0) {
+    return slicesCostBasis(baseSlices);
+  }
+  const ledger = summarizeTransactionEconomics(baseSlices, transactions, replay);
+  return ledger.deposits - ledger.reinvestedValue;
+}
+
+/**
+ * Range-top price for "Adjust position to break even": the smallest upper
+ * bound such that when price reaches that top, everything the user holds
+ * (existing positions + the deposit as entered in the form) is together
+ * worth the invested capital ({@link investedCapital}). The range-driver
+ * effect then re-solves the base for that top, so the applied top/amount
+ * pair keeps breaking even after the deposit reshapes on submit.
+ *
+ * Callers that apply this as `upperPrice` should also solve the base amount
+ * (see {@link findBreakevenBaseAmount}) so the submitted range still breaks
+ * even at that top after the shape rebuilds.
+ */
+export function findBreakevenMaxPrice(options: {
+  baseSlices: LiquiditySlice[];
+  transactions: SimulatedTransaction[];
+  replay: ReplayOptions;
+  strategy: Strategy;
+  baseAmount: number;
+  quoteAmount: number;
+  lowerPrice: number;
+  upperPrice: number;
+  currentPrice: number;
+}): number | null {
+  const {
+    baseSlices,
+    transactions,
+    replay,
+    strategy,
+    baseAmount,
+    quoteAmount,
+    lowerPrice,
+    currentPrice,
+  } = options;
+  const maxBins = 1400;
+  if (!(replay.binStep > 0) || !(currentPrice > 0)) return null;
+  if (!(baseAmount > 1e-9) && !(quoteAmount > 1e-9)) return null;
+
+  const toPrice = (id: number) => getPriceFromId(
+    id,
+    replay.binStep,
+    replay.baseDecimals,
+    replay.quoteDecimals,
+    replay.applyDecimalAdjustment
+  );
+
+  const activeId = getIdFromPrice(
+    currentPrice,
+    replay.binStep,
+    replay.baseDecimals,
+    replay.quoteDecimals,
+    replay.applyDecimalAdjustment
+  );
+  if (!(activeId > 0)) return null;
+  const minExtId = lowerPrice > 0
+    ? getIdFromPrice(lowerPrice, replay.binStep, replay.baseDecimals, replay.quoteDecimals, replay.applyDecimalAdjustment)
+    : activeId;
+  const startId = Math.max(activeId + 1, minExtId);
+  const capId = startId + maxBins;
+
+  const existing = replayTransactions(baseSlices, transactions, replay);
+  const target = investedCapital(baseSlices, transactions, replay);
+
+  // Value of everything (existing positions + the form's deposit) when the
+  // price exits at `maxBinId`. Monotonic in maxBinId: a higher top adds
+  // higher-priced bins whose base converts for more.
+  const valueAtExit = (maxBinId: number): number => {
+    const bins = getInitialBinsForBinRange({
+      binStep: replay.binStep,
+      minBinId: minExtId,
+      maxBinId,
+      activeBinId: activeId,
+      baseAmount,
+      quoteAmount,
+      strategy,
+      baseDecimals: replay.baseDecimals,
+      quoteDecimals: replay.quoteDecimals,
+      applyDecimalAdjustment: replay.applyDecimalAdjustment,
+    });
+    if (bins.length === 0) return Number.NEGATIVE_INFINITY;
+    const deposit: LiquiditySlice = {
+      id: 'breakeven-preview',
+      positionAddress: 'breakeven-preview',
+      isSimulatedPosition: true,
+      openedAtPrice: currentPrice,
+      bins,
+      scale: 1,
+      minPrice: toPrice(minExtId),
+      maxPrice: toPrice(maxBinId),
+      lowerBinId: minExtId,
+      upperBinId: maxBinId,
+    };
+    const sim = simulateSlices([...existing, deposit], toPrice(maxBinId), null);
+    return analyzeCurrentBins(sim).totalValueInQuote;
+  };
+
+  let lo = startId;
+  let hi = capId;
+  let best: number | null = null;
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (valueAtExit(mid) >= target - 1e-6) {
+      best = mid;
+      hi = mid - 1;
+    } else {
+      lo = mid + 1;
+    }
+  }
+  if (best == null) return null;
+  return toPrice(best);
+}
+
+/**
+ * Base amount a deposit over the fixed range [lowerPrice, upperPrice] needs
+ * (quote amount fixed) so that when price reaches the top of the range,
+ * everything the user holds (existing positions + this deposit) is together
+ * worth the invested capital ({@link investedCapital}):
+ *
+ *   value(everything, upperPrice) >= investedCapital
+ *
+ * Value is linear in the base amount, so two probe simulations determine the
+ * answer exactly. Returns 0 when the target is already met with no base.
+ */
+export function findBreakevenBaseAmount(options: {
+  baseSlices: LiquiditySlice[];
+  transactions: SimulatedTransaction[];
+  replay: ReplayOptions;
+  strategy: Strategy;
+  baseAmount: number;
+  quoteAmount: number;
+  lowerPrice: number;
+  upperPrice: number;
+  currentPrice: number;
+}): number | null {
+  const {
+    baseSlices,
+    transactions,
+    replay,
+    strategy,
+    quoteAmount,
+    lowerPrice,
+    upperPrice,
+    currentPrice,
+  } = options;
+  if (!(replay.binStep > 0) || !(currentPrice > 0)) return null;
+  if (!(lowerPrice > 0) || !(upperPrice > lowerPrice)) return null;
+
+  const toId = (price: number) => getIdFromPrice(
+    price,
+    replay.binStep,
+    replay.baseDecimals,
+    replay.quoteDecimals,
+    replay.applyDecimalAdjustment
+  );
+  const toPrice = (id: number) => getPriceFromId(
+    id,
+    replay.binStep,
+    replay.baseDecimals,
+    replay.quoteDecimals,
+    replay.applyDecimalAdjustment
+  );
+
+  const activeId = toId(currentPrice);
+  const minId = toId(lowerPrice);
+  const maxId = toId(upperPrice);
+  if (!(activeId > 0) || !(minId > 0) || maxId < minId) return null;
+
+  const existing = replayTransactions(baseSlices, transactions, replay);
+  const target = investedCapital(baseSlices, transactions, replay);
+
+  const depositFor = (base: number): LiquiditySlice | null => {
+    const bins = getInitialBinsForBinRange({
+      binStep: replay.binStep,
+      minBinId: minId,
+      maxBinId: maxId,
+      activeBinId: activeId,
+      baseAmount: base,
+      quoteAmount,
+      strategy,
+      baseDecimals: replay.baseDecimals,
+      quoteDecimals: replay.quoteDecimals,
+      applyDecimalAdjustment: replay.applyDecimalAdjustment,
+    });
+    if (bins.length === 0) return null;
+    return {
+      id: 'breakeven-amount-preview',
+      positionAddress: 'breakeven-amount-preview',
+      isSimulatedPosition: true,
+      openedAtPrice: currentPrice,
+      bins,
+      scale: 1,
+      minPrice: toPrice(minId),
+      maxPrice: toPrice(maxId),
+      lowerBinId: minId,
+      upperBinId: maxId,
+    };
+  };
+
+  // value(base) is linear in the amount: the fixed quote side and existing
+  // positions form the intercept, and each base bin converts at its own bin
+  // price by the top, proportional to its share of baseAmount.
+  const valueAt = (base: number): number => {
+    const ext = depositFor(base);
+    if (!ext) return Number.NEGATIVE_INFINITY;
+    const allSlices = [...existing, ext];
+    const simulated = simulateSlices(allSlices, toPrice(maxId), null);
+    return analyzeCurrentBins(simulated).totalValueInQuote;
+  };
+
+  const p1 = 1;
+  const p2 = 2;
+  const v1 = valueAt(p1);
+  const v2 = valueAt(p2);
+  if (!Number.isFinite(v1) || !Number.isFinite(v2)) return null;
+  const slope = v2 - v1;
+
+  // Base that brings the combined range-top value up to the invested
+  // capital. Zero or negative means the target is met without new base.
+  if (!(slope > 1e-18)) return 0;
+  const required = (target - v1) / slope + p1;
+  if (!Number.isFinite(required) || required < 0) return 0;
+  return required;
 }
 
 export function positionsFromSlices(
@@ -550,11 +1017,18 @@ export function simulatedPositionDetail(options: {
   };
 }
 
+export function formatRealizedPnl(pnl: number, quoteSymbol: string): string {
+  if (!Number.isFinite(pnl) || Math.abs(pnl) < 1e-9) return `no realized gain/loss`;
+  const word = pnl > 0 ? 'gain' : 'loss';
+  const sign = pnl > 0 ? '+' : '';
+  return `realized ${word} ${sign}${trimNum(pnl)} ${quoteSymbol}`;
+}
+
 export function describeTransaction(
   tx: SimulatedTransaction,
   symbols: { base: string; quote: string }
 ): string {
-  const price = Number.isFinite(tx.price) ? tx.price.toPrecision(5) : '—';
+  const price = Number.isFinite(tx.price) ? trimNum(tx.price) : '—';
   if (tx.type === 'remove-liquidity') {
     const parts: string[] = [];
     if (tx.baseAmount > 0) parts.push(`${trimNum(tx.baseAmount)} ${symbols.base}`);
@@ -570,9 +1044,9 @@ export function describeTransaction(
   if (tx.quoteAmount > 0) parts.push(`${trimNum(tx.quoteAmount)} ${symbols.quote}`);
   const amount = parts.join(' + ') || '0';
   if (tx.type === 'add-position') {
-    return `New ${tx.strategy} position ${trimNum(tx.lowerPrice)}–${trimNum(tx.upperPrice)} · ${amount} at ${price}`;
+    return `New ${tx.strategy} position ${trimNum(tx.lowerPrice)}–${trimNum(tx.upperPrice)} · ${amount} · purchased at ${price}`;
   }
-  return `Add ${amount} (${tx.strategy}) at ${price}`;
+  return `Add ${amount} (${tx.strategy}) · purchased at ${price}`;
 }
 
 function trimNum(value: number): string {

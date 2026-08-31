@@ -2,9 +2,9 @@
 "use client";
 
 import { useState, useMemo, useEffect, useRef, createContext, useContext, type ReactNode } from "react";
-import { useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { getInitialBins, runSimulation, getIdFromPrice, getPriceFromId, type SimulationParams, type Analysis, type SimulatedBin, type Strategy } from "@/lib/dlmm";
+import { getInitialBins, runSimulation, getIdFromPrice, getPriceFromId, rangeForDeposit, DEFAULT_POSITION_BINS, type SimulationParams, type Analysis, type SimulatedBin, type Strategy } from "@/lib/dlmm";
 import { LiquidityChart } from "@/components/liquidity-chart";
 import { Logo } from "@/components/icons";
 import { BarChart3, ExternalLink, Wallet, FlaskConical, Loader2, Undo2 } from "lucide-react";
@@ -33,6 +33,7 @@ import {
   analyzeCurrentBins,
   binsToAmounts,
   combineSliceBins,
+  findBreakevenPrice,
   FORM_SEED_POSITION_ADDRESS,
   originalSlices,
   positionsFromSlices,
@@ -41,6 +42,8 @@ import {
   replayTransactions,
   simulateSlices,
   simulatedPositionDetail,
+  slicesCostBasis,
+  summarizeTransactionEconomics,
   type SimulatedTransaction,
 } from "@/lib/position-transactions";
 import { hasShareOverlay, hasShareTarget, parseShareSearchParams } from "@/lib/share-state";
@@ -84,8 +87,17 @@ export const useDlmmContext = () => {
 };
 
 
+// formatNumber widens precision for values below 1 by the number of leading
+// zeros, so the value must be quantized first for the decimal cap to hold.
+function quantizeToDecimals(value: number, decimals: number): number {
+  if (!Number.isFinite(value)) return value;
+  const scaled = value * 10 ** decimals;
+  if (Math.abs(scaled) > Number.MAX_SAFE_INTEGER) return value;
+  return Math.round(scaled) / 10 ** decimals;
+}
+
 const FormattedNumber = ({ value, maximumFractionDigits = 4 }: { value: number; maximumFractionDigits?: number }) => {
-  const formatted = formatNumberForDisplay(value, { maximumFractionDigits });
+  const formatted = formatNumberForDisplay(quantizeToDecimals(value, maximumFractionDigits), { maximumFractionDigits });
 
   // Handle subscript notation in JSX
   if (formatted.includes('₍')) {
@@ -141,9 +153,12 @@ export function DlmmSimulator() {
   const [originalWalletPositions, setOriginalWalletPositions] = useState<WalletPositionDetail[]>([]);
   const [originalPositionBins, setOriginalPositionBins] = useState<Record<string, SimulatedBin[]>>({});
   const [originalInitialPrice, setOriginalInitialPrice] = useState<number | null>(null);
+  const [poolStartPrice, setPoolStartPrice] = useState<number | null>(null);
   const [simulatedTxs, setSimulatedTxs] = useState<SimulatedTransaction[]>([]);
   const [changeFocus, setChangeFocus] = useState<ChangeFocus | null>(null);
   const [mobileSection, setMobileSection] = useState<MobileSection>('position');
+  const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
   const shareFromUrl = useMemo(() => parseShareSearchParams(searchParams), [searchParams]);
   const pendingShareRef = useRef(shareFromUrl);
@@ -174,11 +189,15 @@ export function DlmmSimulator() {
   }, [params, baseDecimals, quoteDecimals, applyDecimalAdjustment]);
 
   const firstTxPrice = simulatedTxs[0]?.price;
+  const costBasisPrice =
+    typeof params.initialPrice === 'number' && params.initialPrice > 0
+      ? params.initialPrice
+      : originalInitialPrice;
   const walletReplay = useMemo(() => {
     if (typeof params.binStep !== 'number') return null;
     if (originalWalletPositions.length === 0 && simulatedTxs.length === 0) return null;
-    // Keep reconstruction anchored to the price the positions were opened at so
-    // dragging the pool-price slider does not reshape existing liquidity.
+    // Reconstruction stays on the loaded pool composition so dragging the
+    // initial-price handle only changes cost basis, not bin shape.
     const replayPrice = originalInitialPrice ?? firstTxPrice ?? 0;
     return {
       binStep: params.binStep,
@@ -193,11 +212,11 @@ export function DlmmSimulator() {
 
   const baseSlices = useMemo(() => {
     if (!walletReplay) return [];
-    if (originalWalletPositions.length && originalInitialPrice != null) {
-      return originalSlices(originalWalletPositions, originalPositionBins, originalInitialPrice);
+    if (originalWalletPositions.length && costBasisPrice != null) {
+      return originalSlices(originalWalletPositions, originalPositionBins, costBasisPrice);
     }
     return [];
-  }, [walletReplay, originalWalletPositions, originalPositionBins, originalInitialPrice]);
+  }, [walletReplay, originalWalletPositions, originalPositionBins, costBasisPrice]);
 
   const walletSlices = useMemo(() => {
     if (!walletReplay) return [];
@@ -299,6 +318,20 @@ export function DlmmSimulator() {
   };
 
   const handleClear = () => {
+    // Abort any in-flight share hydrate, then drop shared simulation state
+    // from the address bar so Reset returns to a clean landing URL.
+    shareCancelledRef.current = true;
+    shareHydrateStartedRef.current = false;
+    shareBootstrapDoneRef.current = false;
+    shareOverlayAppliedRef.current = false;
+    setShareHydrating(false);
+    setShareHydrateError(null);
+    if (typeof window !== 'undefined') {
+      const target = pathname || window.location.pathname;
+      window.history.replaceState({}, '', target);
+      router.replace(target);
+    }
+
     setParams(defaultParams);
     setCurrentPrice(defaultParams.initialPrice);
     setInitialBins([]);
@@ -315,6 +348,7 @@ export function DlmmSimulator() {
     setOriginalWalletPositions([]);
     setOriginalPositionBins({});
     setOriginalInitialPrice(null);
+    setPoolStartPrice(null);
     setSimulatedTxs([]);
     setChangeFocus(null);
     setWalletPair(null);
@@ -323,15 +357,18 @@ export function DlmmSimulator() {
     setInitialWallet(null);
     setInitialPoolAddress(null);
     setMobileSection('position');
-    setShareHydrateError(null);
-    shareCancelledRef.current = true;
-    shareBootstrapDoneRef.current = false;
-    setShareHydrating(false);
     setClearKey(prev => prev + 1);
   };
   
   const handleInitialPriceChange = (newInitialPrice: number) => {
+    if (simulatedTxs.length > 0) return;
     setParams(prev => (prev.initialPrice === newInitialPrice ? prev : { ...prev, initialPrice: newInitialPrice }));
+  }
+
+  const handleCreatePositionPriceChange = (newInitialPrice: number) => {
+    if (simulatedTxs.length > 0) return;
+    setParams(prev => (prev.initialPrice === newInitialPrice ? prev : { ...prev, initialPrice: newInitialPrice }));
+    setCurrentPrice(newInitialPrice);
   }
 
   const handleCurrentPriceChange = (newCurrentPrice: number) => {
@@ -365,6 +402,9 @@ export function DlmmSimulator() {
           tx = { ...tx, positionAddress: tx.positionAddress || FORM_SEED_POSITION_ADDRESS };
         }
       }
+    }
+    if (originalInitialPrice == null && typeof params.initialPrice === 'number' && params.initialPrice > 0) {
+      setOriginalInitialPrice(params.initialPrice);
     }
     setSimulatedTxs(prev => {
       const index = prev.findIndex(item => item.id === tx.id);
@@ -424,6 +464,7 @@ export function DlmmSimulator() {
     setOriginalWalletPositions([]);
     setOriginalPositionBins({});
     setOriginalInitialPrice(null);
+    setPoolStartPrice(null);
     if (!shareOverlayAppliedRef.current) {
       setSimulatedTxs([]);
     }
@@ -469,17 +510,20 @@ export function DlmmSimulator() {
     setQuoteDecimals(poolQuoteDecimals);
     setApplyDecimalAdjustment(applyDecimalAdjustment);
 
-    // Calculate price range: 69 bins centered around initial price
     const currentBinId = getIdFromPrice(pool.current_price, pool.bin_step, poolBaseDecimals, poolQuoteDecimals, applyDecimalAdjustment);
-    const lowerBinId = currentBinId - 34;
-    const upperBinId = currentBinId + 34;
-
-    // Get the exact bin prices - these will be the boundaries
-    const lowerPrice = getPriceFromId(lowerBinId, pool.bin_step, poolBaseDecimals, poolQuoteDecimals, applyDecimalAdjustment);
-    const upperPrice = getPriceFromId(upperBinId, pool.bin_step, poolBaseDecimals, poolQuoteDecimals, applyDecimalAdjustment);
-
-    // Check if the API current_price matches any bin price
     const exactBinPrice = getPriceFromId(currentBinId, pool.bin_step, poolBaseDecimals, poolQuoteDecimals, applyDecimalAdjustment);
+    const seededRange = rangeForDeposit({
+      currentPrice: exactBinPrice,
+      binStep: pool.bin_step,
+      widthBins: DEFAULT_POSITION_BINS,
+      side: 'both',
+      baseDecimals: poolBaseDecimals,
+      quoteDecimals: poolQuoteDecimals,
+      applyDecimalAdjustment,
+    });
+    const lowerPrice = seededRange.lowerPrice;
+    const upperPrice = seededRange.upperPrice;
+
     const priceDifference = Math.abs(pool.current_price - exactBinPrice);
 
     // Check a few neighboring bins to see their prices
@@ -507,6 +551,7 @@ export function DlmmSimulator() {
 
     // Update current price to match the pool
     setCurrentPrice(exactBinPrice);
+    setPoolStartPrice(exactBinPrice);
     applyShareOverlay(pool.address);
   };
 
@@ -588,6 +633,7 @@ export function DlmmSimulator() {
       setOriginalWalletPositions(loaded.positions);
       setOriginalPositionBins(loaded.positionBins);
       setOriginalInitialPrice(exactBinPrice);
+      setPoolStartPrice(exactBinPrice);
       if (!shareOverlayAppliedRef.current) {
         setSimulatedTxs([]);
       }
@@ -757,27 +803,50 @@ export function DlmmSimulator() {
 
   const analysis = simulation?.analysis;
 
-  const initialTotalValue = useMemo(() => {
-    if (typeof params.initialPrice !== 'number') return 0;
+  const txLedger = useMemo(() => {
+    if (!walletReplay) return null;
+    return summarizeTransactionEconomics(baseSlices, simulatedTxs, walletReplay);
+  }, [walletReplay, baseSlices, simulatedTxs]);
+
+  const remainingCost = useMemo(() => {
+    if (typeof params.initialPrice !== 'number') {
+      return walletSlices.length ? slicesCostBasis(walletSlices) : 0;
+    }
     const startPrice = params.initialPrice;
-    // Same price as now → same LP value, so P&L is exactly 0.
+    // Same price as now with no simulated txs → same LP value, so P&L is exactly 0.
     if (
-      analysis
+      simulatedTxs.length === 0
+      && analysis
       && typeof currentPrice === 'number'
       && Math.abs(currentPrice - startPrice) < 1e-9
     ) {
       return analysis.totalValueInQuote;
     }
-    if (walletSlices.length) {
-      return analyzeCurrentBins(simulateSlices(walletSlices, startPrice, walletReplay)).totalValueInQuote;
-    }
+    if (walletSlices.length) return slicesCostBasis(walletSlices);
     if (!initialBins.length) return 0;
     return runSimulation(initialBins, startPrice, startPrice).analysis.totalValueInQuote;
-  }, [analysis, currentPrice, params.initialPrice, walletSlices, walletReplay, initialBins]);
-  
-  
-  // Position Value Change
-  const valueChange = analysis && initialTotalValue > 0 ? ((analysis.totalValueInQuote - initialTotalValue) / initialTotalValue) * 100 : 0;
+  }, [walletSlices, params.initialPrice, simulatedTxs.length, analysis, currentPrice, initialBins]);
+
+  const realizedPnl = txLedger?.realizedPnl ?? 0;
+  // Fresh capital the user put in: every deposit minus the value of tokens
+  // redeposited from earlier removals (those move pocketed cash, not new
+  // money). Withdrawals never reduce it — the withdrawn tokens still belong
+  // to the user, held as pocketed cash below.
+  const netInvestment = txLedger
+    ? txLedger.deposits - txLedger.reinvestedValue
+    : remainingCost;
+  // Withdrawn funds not yet redeployed. Part of the portfolio: the user
+  // still owns them, they just sit outside any position.
+  const pocketedCash = txLedger
+    ? txLedger.withdrawals - txLedger.reinvestedValue
+    : 0;
+  // Everything the user owns right now: open positions plus pocketed cash.
+  const portfolioValue = (analysis?.totalValueInQuote ?? 0) + pocketedCash;
+
+  // Position Value Change — return on the net investment.
+  const valueChange = analysis && netInvestment > 0
+    ? ((portfolioValue - netInvestment) / netInvestment) * 100
+    : 0;
   const formattedValueChange = valueChange.toFixed(2);
   let valueChangeDisplay: string | undefined;
   let valueChangeColorClass: string | undefined;
@@ -814,19 +883,26 @@ export function DlmmSimulator() {
     priceChangeColorClass = 'text-red-400';
   }
 
-  // Impermanent Loss vs HODL
-  const profitLoss = analysis ? analysis.totalValueInQuote - initialTotalValue : 0;
+  // P&L breakdown: open positions vs their cost basis (unrealized), closed
+  // lots from removals (realized), and their sum (net). The net always
+  // equals portfolio value (positions + pocketed cash) minus net investment.
+  const unrealizedPnl = analysis ? analysis.totalValueInQuote - remainingCost : 0;
+  const realizedPnlValue = realizedPnl;
+  const netPnl = portfolioValue - netInvestment;
 
-  let plColorClass: string | undefined;
-  if (analysis) {
-    if (Math.abs(profitLoss) < 0.00000001) {
-        plColorClass = '';
-    } else if (profitLoss > 0) {
-      plColorClass = 'text-green-400';
-    } else {
-      plColorClass = 'text-red-400';
-    }
-  }
+  const pnlColorClass = (value: number): string | undefined => {
+    if (Math.abs(value) < 1e-9) return undefined;
+    return value > 0 ? 'text-green-400' : 'text-red-400';
+  };
+
+  // Discrete breakeven against the net investment: the first liquidity bin
+  // where positions + pocketed cash together cover the fresh capital put in.
+  // That equals remaining cost minus realized P&L, which is what
+  // findBreakevenPrice solves.
+  const breakevenPrice = useMemo(() => {
+    if (!walletSlices.length) return null;
+    return findBreakevenPrice(walletSlices, remainingCost, realizedPnl);
+  }, [walletSlices, remainingCost, realizedPnl]);
 
   const compositionPrice = originalInitialPrice ?? firstTxPrice;
   const isPristine = typeof currentPrice === 'number'
@@ -872,19 +948,14 @@ export function DlmmSimulator() {
     return totalConvertedValue / totalConvertedAmount;
   }, [simulation, currentPrice, params.initialPrice]);
 
-  // Determine label for average price card based on price movement
   const avgPriceLabel = useMemo(() => {
     if (typeof currentPrice !== 'number' || typeof params.initialPrice !== 'number') {
-      return 'Initial Price';
+      return 'Avg Price';
     }
-
     if (Math.abs(currentPrice - params.initialPrice) < 1e-9) {
-      return 'Initial Price';
-    } else if (currentPrice < params.initialPrice) {
-      return 'Avg Price Paid';
-    } else {
-      return 'Avg Price Sold';
+      return 'Avg Price';
     }
+    return currentPrice < params.initialPrice ? 'Avg Price Paid' : 'Avg Price Sold';
   }, [currentPrice, params.initialPrice]);
 
 
@@ -1045,6 +1116,19 @@ export function DlmmSimulator() {
                   currentPrice={currentPrice}
                   initialPrice={typeof params.initialPrice === 'number' ? params.initialPrice : currentPrice}
                   tokenSymbols={tokenSymbols}
+                  tokenIcons={
+                    walletPair
+                      ? {
+                          base: walletPair.tokenXIcon || undefined,
+                          quote: walletPair.tokenYIcon || undefined,
+                        }
+                      : selectedPool
+                        ? {
+                            base: `https://cdn.jsdelivr.net/gh/solana-labs/token-list@main/assets/mainnet/${selectedPool.mint_x}/logo.png`,
+                            quote: `https://cdn.jsdelivr.net/gh/solana-labs/token-list@main/assets/mainnet/${selectedPool.mint_y}/logo.png`,
+                          }
+                        : undefined
+                  }
                   defaultLowerPrice={typeof params.lowerPrice === 'number' ? params.lowerPrice : currentPrice * 0.95}
                   defaultUpperPrice={typeof params.upperPrice === 'number' ? params.upperPrice : currentPrice * 1.05}
                   defaultStrategy={params.strategy}
@@ -1060,6 +1144,8 @@ export function DlmmSimulator() {
                   onDeletePosition={deleteSimulatedPosition}
                   onRestore={restoreOriginalPositions}
                   onFocusHandled={() => setChangeFocus(null)}
+                  onInitialPriceChange={handleCreatePositionPriceChange}
+                  poolStartPrice={poolStartPrice}
                   showRestore={!!walletBins}
                   emptyHint="No positions yet. Create one to start the simulation."
                 />
@@ -1098,15 +1184,15 @@ export function DlmmSimulator() {
             </CardHeader>
             <CardContent className="flex flex-col gap-3 p-3 pt-0 lg:gap-4 lg:p-6 lg:pt-0">
               {canStackPositions && typeof params.initialPrice === 'number' && (
-                <div className="flex items-center gap-2 overflow-x-auto pb-1 -mx-1 px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                  <span className="shrink-0 text-xs text-muted-foreground mr-1">Price shock</span>
+                <div className="grid grid-cols-[auto_1fr_1fr_1fr_1fr] items-center gap-x-1.5 gap-y-2 sm:flex sm:flex-wrap sm:gap-2">
+                  <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">Price shock</span>
                   {[-25, -10, -5, -1, 0, 1, 5, 10, 25].map((pct) => (
                     <Button
                       key={pct}
                       type="button"
                       variant={pct === 0 ? 'secondary' : 'outline'}
                       size="sm"
-                      className="h-8 shrink-0 px-2.5 text-xs"
+                      className="h-8 min-w-0 shrink-0 px-2 text-xs sm:px-2.5"
                       onClick={() => {
                         if (pct === 0) {
                           handleCurrentPriceChange(params.initialPrice as number);
@@ -1130,7 +1216,10 @@ export function DlmmSimulator() {
                   ))}
                 </div>
               )}
-              <div className="h-72 w-full lg:h-80">
+              <div className={cn(
+                "h-80 w-full lg:h-96",
+                !!walletBins && simulatedTxs.length === 0 && "h-[24.5rem] lg:h-[28rem]"
+              )}>
                 {simulationParams && decimalsDetermined && typeof currentPrice === 'number' && typeof params.initialPrice === 'number' && typeof params.lowerPrice === 'number' && typeof params.upperPrice === 'number' ? (
                   <LiquidityChart
                     bins={initialBins}
@@ -1142,7 +1231,9 @@ export function DlmmSimulator() {
                     strategy={params.strategy}
                     onCurrentPriceChange={handleCurrentPriceChange}
                     onInitialPriceChange={handleInitialPriceChange}
-                    initialPriceLabel="Pool Price"
+                    initialPriceLocked={simulatedTxs.length > 0}
+                    initialPriceLabel="Initial Price"
+                    promptSetInitialPrice={!!walletBins && simulatedTxs.length === 0}
                   />
                 ) : (
                   <div className="flex items-center justify-center h-full text-muted-foreground">
@@ -1153,30 +1244,57 @@ export function DlmmSimulator() {
               {analysis && (
                 <div className="flex flex-col gap-2">
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-px overflow-hidden rounded-xl border border-border/50 bg-border/50">
-                    <AnalysisStat label="Initial Value">
-                      <FormattedNumber value={initialTotalValue} maximumFractionDigits={4} />
+                    <AnalysisStat label="Net Investment">
+                      <FormattedNumber value={netInvestment} maximumFractionDigits={quoteDecimals} />
                     </AnalysisStat>
-                    <AnalysisStat label="Current Value">
-                      <FormattedNumber value={analysis.totalValueInQuote} maximumFractionDigits={4} />
+                    <AnalysisStat label="Position Value">
+                      <FormattedNumber value={analysis.totalValueInQuote} maximumFractionDigits={quoteDecimals} />
                     </AnalysisStat>
-                    <AnalysisStat label="Value Change" className={valueChangeColorClass}>
+                    <AnalysisStat label="Unrealized P&L" className={pnlColorClass(unrealizedPnl)}>
+                      <FormattedNumber value={unrealizedPnl} maximumFractionDigits={quoteDecimals} />
+                    </AnalysisStat>
+                    <AnalysisStat label="Realized P&L" className={pnlColorClass(realizedPnlValue)}>
+                      <FormattedNumber value={realizedPnlValue} maximumFractionDigits={quoteDecimals} />
+                    </AnalysisStat>
+                    <AnalysisStat label="Net P&L" className={pnlColorClass(netPnl)}>
+                      <FormattedNumber value={netPnl} maximumFractionDigits={quoteDecimals} />
+                    </AnalysisStat>
+                    <AnalysisStat label="Net P&L" className={valueChangeColorClass}>
                       {valueChangeDisplay}
                     </AnalysisStat>
-                    <AnalysisStat label="Profit/Loss" className={plColorClass}>
-                      <FormattedNumber value={profitLoss} maximumFractionDigits={4} />
-                    </AnalysisStat>
-                    <AnalysisStat label={`${tokenSymbols.base} Tokens`}>
-                      <FormattedNumber value={displayBase} maximumFractionDigits={4} />
-                    </AnalysisStat>
-                    <AnalysisStat label={`${tokenSymbols.quote} Tokens`}>
-                      <FormattedNumber value={displayQuote} maximumFractionDigits={4} />
+                    <AnalysisStat label="Initial Price">
+                      {typeof params.initialPrice === 'number' ? (
+                        <FormattedNumber value={params.initialPrice} maximumFractionDigits={quoteDecimals} />
+                      ) : '—'}
                     </AnalysisStat>
                     <AnalysisStat label="Price Change" className={priceChangeColorClass}>
                       {priceChangeDisplay}
                     </AnalysisStat>
-                    <AnalysisStat label={avgPriceLabel}>
-                      <FormattedNumber value={averagePricePaid} maximumFractionDigits={4} />
+                    <AnalysisStat label={`${tokenSymbols.base} Tokens`}>
+                      <FormattedNumber value={displayBase} maximumFractionDigits={quoteDecimals} />
                     </AnalysisStat>
+                    <AnalysisStat label={`${tokenSymbols.quote} Tokens`}>
+                      <FormattedNumber value={displayQuote} maximumFractionDigits={quoteDecimals} />
+                    </AnalysisStat>
+                    <AnalysisStat label={avgPriceLabel}>
+                      <FormattedNumber value={averagePricePaid} maximumFractionDigits={quoteDecimals} />
+                    </AnalysisStat>
+                    <AnalysisStat label="Breakeven">
+                      {breakevenPrice != null ? (
+                        <FormattedNumber value={breakevenPrice} maximumFractionDigits={quoteDecimals} />
+                      ) : 'N/A'}
+                    </AnalysisStat>
+                    <AnalysisStat
+                      label="Current Value"
+                      className={pocketedCash > 1e-9 ? undefined : 'col-span-2'}
+                    >
+                      <FormattedNumber value={portfolioValue} maximumFractionDigits={quoteDecimals} />
+                    </AnalysisStat>
+                    {pocketedCash > 1e-9 && (
+                      <AnalysisStat label="Pocketed Value">
+                        <FormattedNumber value={pocketedCash} maximumFractionDigits={quoteDecimals} />
+                      </AnalysisStat>
+                    )}
                   </div>
                   <p className="text-xs text-muted-foreground px-0.5">
                     {analysis.totalBins} bins

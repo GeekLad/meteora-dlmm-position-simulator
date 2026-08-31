@@ -22,9 +22,26 @@ interface RemovalRangePickerProps {
   quoteDecimals: number;
   applyDecimalAdjustment: boolean;
   tokenSymbols: { base: string; quote: string };
+  tokenIcons?: { base?: string; quote?: string };
   removePct: number;
   onRangeChange: (minPrice: number, maxPrice: number) => void;
   onRemovePctChange: (pct: number) => void;
+}
+
+function rangeForToken(
+  bins: SimulatedBin[],
+  tokenType: 'base' | 'quote'
+): { minId: number; maxId: number } | null {
+  let minId = Infinity;
+  let maxId = -Infinity;
+  for (const bin of bins) {
+    if (bin.currentTokenType === tokenType && bin.currentAmount > DUST) {
+      if (bin.id < minId) minId = bin.id;
+      if (bin.id > maxId) maxId = bin.id;
+    }
+  }
+  if (!Number.isFinite(minId) || maxId < minId) return null;
+  return { minId, maxId };
 }
 
 function formatBoundPrice(price: number): string {
@@ -63,6 +80,7 @@ export function RemovalRangePicker({
   quoteDecimals,
   applyDecimalAdjustment,
   tokenSymbols,
+  tokenIcons,
   removePct,
   onRangeChange,
   onRemovePctChange,
@@ -102,6 +120,8 @@ export function RemovalRangePicker({
 
   const hasBase = bins.some(bin => bin.currentTokenType === 'base' && bin.currentAmount > DUST);
   const hasQuote = bins.some(bin => bin.currentTokenType === 'quote' && bin.currentAmount > DUST);
+  const quoteRange = useMemo(() => rangeForToken(bins, 'quote'), [bins]);
+  const baseRange = useMemo(() => rangeForToken(bins, 'base'), [bins]);
 
   const commitRange = useCallback((minId: number, maxId: number) => {
     if (!span || !(binStep > 0)) return;
@@ -349,6 +369,32 @@ export function RemovalRangePicker({
         </div>
       </div>
 
+      {(hasQuote || hasBase) && (
+        <div className="space-y-1.5">
+          <span className="text-xs font-medium">Remove only</span>
+          <div className={cn('grid gap-2', hasQuote && hasBase ? 'grid-cols-2' : 'grid-cols-1')}>
+            {hasQuote && quoteRange && (
+              <TokenOnlyButton
+                symbol={tokenSymbols.quote}
+                iconSrc={tokenIcons?.quote}
+                color="var(--color-quote)"
+                selected={selected.minId === quoteRange.minId && selected.maxId === quoteRange.maxId}
+                onClick={() => commitRange(quoteRange.minId, quoteRange.maxId)}
+              />
+            )}
+            {hasBase && baseRange && (
+              <TokenOnlyButton
+                symbol={tokenSymbols.base}
+                iconSrc={tokenIcons?.base}
+                color="var(--color-base)"
+                selected={selected.minId === baseRange.minId && selected.maxId === baseRange.maxId}
+                onClick={() => commitRange(baseRange.minId, baseRange.maxId)}
+              />
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-medium">Select Bin Range</span>
         <div className="flex gap-1">
@@ -370,6 +416,71 @@ export function RemovalRangePicker({
         </div>
       </div>
     </div>
+  );
+}
+
+function TokenGlyph({
+  src,
+  symbol,
+  color,
+}: {
+  src?: string;
+  symbol: string;
+  color: string;
+}) {
+  const [failed, setFailed] = useState(false);
+  const letters = symbol.slice(0, 2).toUpperCase();
+  if (!src || failed) {
+    return (
+      <span
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold text-background"
+        style={{ backgroundColor: color }}
+        aria-hidden
+      >
+        {letters}
+      </span>
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt=""
+      className="h-5 w-5 shrink-0 rounded-full border border-background/40 object-cover"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+function TokenOnlyButton({
+  symbol,
+  iconSrc,
+  color,
+  selected,
+  onClick,
+}: {
+  symbol: string;
+  iconSrc?: string;
+  color: string;
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={selected}
+      aria-label={`Select all ${symbol} bins`}
+      className={cn(
+        'inline-flex h-9 min-w-0 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium transition-colors',
+        selected
+          ? 'bg-primary text-primary-foreground'
+          : 'bg-secondary text-foreground hover:bg-secondary/80'
+      )}
+    >
+      <TokenGlyph src={iconSrc} symbol={symbol} color={color} />
+      <span className="truncate">{symbol}</span>
+    </button>
   );
 }
 

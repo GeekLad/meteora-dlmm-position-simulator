@@ -10,6 +10,7 @@ import {
   getPriceFromId,
   type Strategy,
 } from '@/lib/dlmm';
+import { ResetToInitialButton } from '@/components/reset-to-initial-button';
 
 const MAX_POSITION_BINS = 1400;
 const DUST = 1e-9;
@@ -26,6 +27,8 @@ interface RangeEditorProps {
   quoteDecimals: number;
   applyDecimalAdjustment: boolean;
   onChange: (minPrice: number, maxPrice: number) => void;
+  onInitialPriceChange?: (price: number) => void;
+  defaultInitialPrice?: number | null;
 }
 
 function snapPrice(
@@ -94,6 +97,8 @@ export function RangeEditor({
   quoteDecimals,
   applyDecimalAdjustment,
   onChange,
+  onInitialPriceChange,
+  defaultInitialPrice = null,
 }: RangeEditorProps) {
   const bounds = useMemo(() => {
     if (!(binStep > 0) || !(minPrice > 0) || !(maxPrice > 0)) return null;
@@ -161,6 +166,8 @@ export function RangeEditor({
         enabled={Boolean(bounds)}
         onDragMin={id => bounds && clampRange(id, bounds.max.id)}
         onDragMax={id => bounds && clampRange(bounds.min.id, id)}
+        onInitialPriceChange={onInitialPriceChange}
+        defaultInitialPrice={defaultInitialPrice}
       />
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 lg:gap-2">
@@ -192,6 +199,19 @@ export function RangeEditor({
   );
 }
 
+function viewWindow(minBinId: number, maxBinId: number, activeId: number | null, draggingPrice: boolean) {
+  const width = Math.max(1, maxBinId - minBinId + 1);
+  const pad = Math.max(6, Math.ceil(width * 0.12));
+  let viewMin = minBinId - pad;
+  let viewMax = maxBinId + pad;
+  const extra = draggingPrice ? Math.max(10, pad) : Math.max(3, Math.ceil(pad / 2));
+  if (activeId != null && Number.isFinite(activeId)) {
+    if (activeId - extra < viewMin) viewMin = activeId - extra;
+    if (activeId + extra > viewMax) viewMax = activeId + extra;
+  }
+  return { viewMin, viewMax };
+}
+
 function RangePreview({
   minBinId,
   maxBinId,
@@ -206,6 +226,8 @@ function RangePreview({
   enabled,
   onDragMin,
   onDragMax,
+  onInitialPriceChange,
+  defaultInitialPrice = null,
 }: {
   minBinId: number;
   maxBinId: number;
@@ -220,32 +242,41 @@ function RangePreview({
   enabled: boolean;
   onDragMin: (binId: number) => void;
   onDragMax: (binId: number) => void;
+  onInitialPriceChange?: (price: number) => void;
+  defaultInitialPrice?: number | null;
 }) {
   const chartRef = useRef<HTMLDivElement>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{
-    edge: 'min' | 'max';
+    edge: 'min' | 'max' | 'price';
     startX: number;
     startId: number;
     pxPerBin: number;
   } | null>(null);
-  const [dragging, setDragging] = useState<'min' | 'max' | null>(null);
+  const [dragging, setDragging] = useState<'min' | 'max' | 'price' | null>(null);
 
   const hasAmounts = baseAmount > DUST || quoteAmount > DUST;
+  const priceEditable = typeof onInitialPriceChange === 'function';
+
+  const activeId = enabled && binStep > 0 && currentPrice > 0
+    ? getIdFromPrice(currentPrice, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment)
+    : null;
+
+  const { viewMin, viewMax } = useMemo(
+    () => viewWindow(minBinId, maxBinId, activeId, dragging === 'price'),
+    [minBinId, maxBinId, activeId, dragging]
+  );
+  const viewSpan = Math.max(1, viewMax - viewMin);
+  const idToPct = (id: number) => ((id - viewMin) / viewSpan) * 100;
 
   const bins = useMemo(() => {
     if (!enabled || !hasAmounts || !(binStep > 0) || !(currentPrice > 0) || maxBinId < minBinId) return [];
-    const activeId = getIdFromPrice(
-      currentPrice,
-      binStep,
-      baseDecimals,
-      quoteDecimals,
-      applyDecimalAdjustment
-    );
+    const resolvedActive = activeId ?? minBinId;
     return getInitialBinsForBinRange({
       binStep,
       minBinId,
       maxBinId,
-      activeBinId: activeId,
+      activeBinId: resolvedActive,
       baseAmount,
       quoteAmount,
       strategy,
@@ -254,6 +285,7 @@ function RangePreview({
       applyDecimalAdjustment,
     });
   }, [
+    activeId,
     applyDecimalAdjustment,
     baseAmount,
     baseDecimals,
@@ -268,29 +300,34 @@ function RangePreview({
     strategy,
   ]);
 
+  const binById = useMemo(() => {
+    const map = new Map<number, (typeof bins)[number]>();
+    for (const bin of bins) map.set(bin.id, bin);
+    return map;
+  }, [bins]);
+
   const maxValue = useMemo(() => {
     if (bins.length === 0) return 1;
     return Math.max(...bins.map(bin => binInitialDisplayValue(bin)), 0) || 1;
   }, [bins]);
 
+  const viewIds = useMemo(() => {
+    if (!enabled || viewMax < viewMin) return [];
+    const ids: number[] = [];
+    for (let id = viewMin; id <= viewMax; id++) ids.push(id);
+    return ids;
+  }, [enabled, viewMin, viewMax]);
+
   const ticks = useMemo(() => {
-    if (!enabled || !(binStep > 0) || maxBinId < minBinId) return [];
-    const count = Math.min(3, maxBinId - minBinId + 1);
-    if (count === 1) {
-      return [{
-        price: getPriceFromId(minBinId, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment),
-        position: 50,
-      }];
-    }
-    return Array.from({ length: count }, (_, i) => {
-      const id = Math.round(minBinId + (i / (count - 1)) * (maxBinId - minBinId));
-      const position = (i / (count - 1)) * 100;
+    if (!enabled || !(binStep > 0) || viewMax < viewMin) return [];
+    return [0, 0.5, 1].map(t => {
+      const id = Math.round(viewMin + t * viewSpan);
       return {
         price: getPriceFromId(id, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment),
-        position,
+        position: t * 100,
       };
     });
-  }, [applyDecimalAdjustment, baseDecimals, binStep, enabled, maxBinId, minBinId, quoteDecimals]);
+  }, [applyDecimalAdjustment, baseDecimals, binStep, enabled, quoteDecimals, viewMin, viewMax, viewSpan]);
 
   const minBoundPrice = enabled && binStep > 0
     ? getPriceFromId(minBinId, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment)
@@ -298,30 +335,73 @@ function RangePreview({
   const maxBoundPrice = enabled && binStep > 0
     ? getPriceFromId(maxBinId, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment)
     : 0;
+  const activePrice = activeId != null && binStep > 0
+    ? getPriceFromId(activeId, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment)
+    : currentPrice;
+
+  const outsideHint = activeId == null
+    ? null
+    : activeId < minBinId
+      ? 'Below range · all base'
+      : activeId > maxBinId
+        ? 'Above range · all quote'
+        : null;
+
+  const clientXToId = useCallback((clientX: number, target: HTMLElement | null) => {
+    if (!target) return null;
+    const rect = target.getBoundingClientRect();
+    if (!(rect.width > 0)) return null;
+    const raw = viewMin + ((clientX - rect.left) / rect.width) * viewSpan;
+    const width = Math.max(1, maxBinId - minBinId + 1);
+    const limit = width * 6;
+    return Math.round(Math.max(minBinId - limit, Math.min(maxBinId + limit, raw)));
+  }, [maxBinId, minBinId, viewMin, viewSpan]);
 
   const applyDrag = useCallback((clientX: number) => {
     const drag = dragRef.current;
-    if (!drag || !(drag.pxPerBin > 0)) return;
+    if (!drag) return;
+    if (drag.edge === 'price') {
+      const id = clientXToId(clientX, previewRef.current);
+      if (id != null && onInitialPriceChange && binStep > 0) {
+        onInitialPriceChange(getPriceFromId(id, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment));
+      }
+      return;
+    }
+    if (!(drag.pxPerBin > 0)) return;
     const deltaBins = Math.round((clientX - drag.startX) / drag.pxPerBin);
     const nextId = drag.startId + deltaBins;
     if (drag.edge === 'min') onDragMin(nextId);
     else onDragMax(nextId);
-  }, [onDragMax, onDragMin]);
+  }, [applyDecimalAdjustment, baseDecimals, binStep, clientXToId, onDragMax, onDragMin, onInitialPriceChange, quoteDecimals]);
 
-  const startDrag = (edge: 'min' | 'max', event: React.PointerEvent<HTMLDivElement>) => {
+  const startRangeDrag = (edge: 'min' | 'max', event: React.PointerEvent<HTMLDivElement>) => {
     if (!enabled || !chartRef.current) return;
     event.preventDefault();
     event.stopPropagation();
     const rect = chartRef.current.getBoundingClientRect();
-    const count = Math.max(1, maxBinId - minBinId + 1);
     dragRef.current = {
       edge,
       startX: event.clientX,
       startId: edge === 'min' ? minBinId : maxBinId,
-      pxPerBin: rect.width / Math.max(count, 20),
+      pxPerBin: rect.width / viewSpan,
     };
     setDragging(edge);
     event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const startPriceDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!enabled || !priceEditable || !onInitialPriceChange) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragRef.current = {
+      edge: 'price',
+      startX: event.clientX,
+      startId: activeId ?? minBinId,
+      pxPerBin: 0,
+    };
+    setDragging('price');
+    event.currentTarget.setPointerCapture(event.pointerId);
+    applyDrag(event.clientX);
   };
 
   const endDrag = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -344,39 +424,108 @@ function RangePreview({
     );
   }
 
+  const minPct = idToPct(minBinId);
+  const maxPct = idToPct(maxBinId);
+  const pricePct = activeId != null ? Math.max(0, Math.min(100, idToPct(activeId))) : 50;
+  const columnGap = viewIds.length > 80 ? '' : 'gap-px';
+
+  const canResetInitial = Boolean(
+    priceEditable
+    && defaultInitialPrice
+    && defaultInitialPrice > 0
+    && Math.abs(activePrice - defaultInitialPrice) > 1e-9
+  );
+
   return (
     <div className="space-y-1 px-2.5">
-      {hasAmounts && bins.length > 0 && (
-        <div className={`flex h-16 items-end ${bins.length > 80 ? '' : 'gap-px'}`}>
-          {bins.map(bin => {
-            const value = binInitialDisplayValue(bin);
-            const height = value > DUST ? Math.max((value / maxValue) * 100, 4) : 3;
-            const color = bin.initialTokenType === 'base' ? 'var(--color-base)' : 'var(--color-quote)';
-            return (
+      <div className="relative">
+        <div
+          ref={previewRef}
+          className={`relative h-20 select-none ${priceEditable ? 'cursor-ew-resize' : ''}`}
+          style={{ touchAction: 'none' }}
+          onPointerDown={priceEditable ? startPriceDrag : undefined}
+          onPointerMove={event => dragging === 'price' && applyDrag(event.clientX)}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+        >
+          <div className={`flex h-full items-end ${columnGap}`}>
+            {viewIds.map(id => {
+              const inRange = id >= minBinId && id <= maxBinId;
+              const bin = binById.get(id);
+              const value = bin ? binInitialDisplayValue(bin) : 0;
+              const hasValue = value > DUST;
+              const height = hasValue
+                ? Math.max((value / maxValue) * 100, 4)
+                : inRange
+                  ? 6
+                  : 2;
+              const color = bin
+                ? (bin.initialTokenType === 'base' ? 'var(--color-base)' : 'var(--color-quote)')
+                : 'var(--color-quote)';
+              return (
+                <div
+                  key={id}
+                  className="min-w-0 flex-1 rounded-t-[1px]"
+                  style={{
+                    height: `${height}%`,
+                    backgroundColor: inRange ? color : 'transparent',
+                    opacity: hasValue ? 0.95 : inRange ? 0.2 : 0,
+                    boxShadow: inRange && !hasValue ? 'inset 0 -1px 0 hsl(var(--border) / 0.7)' : undefined,
+                  }}
+                />
+              );
+            })}
+          </div>
+
+          {priceEditable && activeId != null && (
+            <div
+              role="slider"
+              tabIndex={0}
+              aria-label="Initial price"
+              aria-valuenow={activePrice}
+              aria-valuetext={formatBoundPrice(activePrice)}
+              className="absolute top-0 bottom-0 z-20 w-7 -translate-x-1/2 cursor-ew-resize"
+              style={{ left: `${pricePct}%`, touchAction: 'none' }}
+              onKeyDown={event => {
+                if (activeId == null || !onInitialPriceChange) return;
+                if (event.key === 'ArrowLeft') {
+                  event.preventDefault();
+                  onInitialPriceChange(getPriceFromId(activeId - 1, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment));
+                }
+                if (event.key === 'ArrowRight') {
+                  event.preventDefault();
+                  onInitialPriceChange(getPriceFromId(activeId + 1, binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment));
+                }
+              }}
+            >
               <div
-                key={bin.id}
-                className="min-w-0 flex-1 rounded-t-[1px]"
-                style={{
-                  height: `${height}%`,
-                  backgroundColor: color,
-                  opacity: value > DUST ? 0.95 : 0.25,
-                }}
+                className="absolute top-0 bottom-0 left-1/2 w-0.5 -translate-x-1/2 bg-gradient-to-b from-primary/80 to-primary/40 border-foreground/80 border-dashed border-l"
+                style={{ boxShadow: '0 0 8px rgba(66, 153, 225, 0.45)' }}
               />
-            );
-          })}
+              <div
+                className="absolute bottom-0 left-1/2 h-2 w-5 -translate-x-1/2 rounded-t-sm bg-primary"
+                style={{ boxShadow: '0 0 8px rgba(66, 153, 225, 0.45)' }}
+              />
+            </div>
+          )}
         </div>
-      )}
+      </div>
 
       <div
         ref={chartRef}
         className="relative h-5 select-none"
         style={{ touchAction: 'none' }}
       >
-        <div className="pointer-events-none absolute inset-x-0 top-1/2 h-0.5 -translate-y-1/2 bg-primary/80" />
+        <div className="pointer-events-none absolute inset-x-0 top-1/2 h-0.5 -translate-y-1/2 bg-border" />
+        <div
+          className="pointer-events-none absolute top-1/2 h-0.5 -translate-y-1/2 bg-primary/80"
+          style={{ left: `${minPct}%`, width: `${Math.max(0, maxPct - minPct)}%` }}
+        />
         <Handle
           edge="min"
+          leftPct={minPct}
           dragging={dragging === 'min'}
-          onPointerDown={event => startDrag('min', event)}
+          onPointerDown={event => startRangeDrag('min', event)}
           onPointerMove={event => applyDrag(event.clientX)}
           onPointerUp={endDrag}
           onPointerCancel={endDrag}
@@ -390,8 +539,9 @@ function RangePreview({
         />
         <Handle
           edge="max"
+          leftPct={maxPct}
           dragging={dragging === 'max'}
-          onPointerDown={event => startDrag('max', event)}
+          onPointerDown={event => startRangeDrag('max', event)}
           onPointerMove={event => applyDrag(event.clientX)}
           onPointerUp={endDrag}
           onPointerCancel={endDrag}
@@ -419,12 +569,39 @@ function RangePreview({
           </div>
         ))}
       </div>
+      {priceEditable && (
+        <div className={canResetInitial ? 'relative h-[4.25rem]' : 'relative h-10'}>
+          <div
+            className="absolute top-0 -translate-x-1/2 flex flex-col items-center text-center"
+            style={{ left: `${pricePct}%` }}
+          >
+            <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground whitespace-nowrap">
+              Initial Price
+            </div>
+            <div className="text-[11px] font-bold tabular-nums text-primary leading-tight whitespace-nowrap">
+              {formatBoundPrice(activePrice, true)}
+            </div>
+            {outsideHint && (
+              <div className="text-[9px] text-muted-foreground leading-tight whitespace-nowrap">{outsideHint}</div>
+            )}
+            {canResetInitial && defaultInitialPrice && onInitialPriceChange && (
+              <ResetToInitialButton onClick={() => onInitialPriceChange(defaultInitialPrice)} />
+            )}
+          </div>
+        </div>
+      )}
+      {priceEditable && (
+        <p className="text-[10px] text-muted-foreground">
+          Drag the vertical bar to set the initial simulation price. Move it outside the min/max handles for a one-sided position.
+        </p>
+      )}
     </div>
   );
 }
 
 function Handle({
   edge,
+  leftPct,
   dragging,
   onPointerDown,
   onPointerMove,
@@ -436,6 +613,7 @@ function Handle({
   ariaMax,
 }: {
   edge: 'min' | 'max';
+  leftPct: number;
   dragging: boolean;
   onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => void;
   onPointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
@@ -456,7 +634,7 @@ function Handle({
       aria-valuenow={ariaValue}
       aria-valuetext={formatBoundPrice(ariaValue)}
       className="absolute top-1/2 z-10 flex h-5 w-5 -translate-x-1/2 -translate-y-1/2 cursor-ew-resize items-center justify-center"
-      style={{ left: edge === 'min' ? '0%' : '100%', touchAction: 'none' }}
+      style={{ left: `${leftPct}%`, touchAction: 'none' }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
