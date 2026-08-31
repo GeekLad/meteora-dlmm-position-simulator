@@ -1,9 +1,10 @@
 /**
  * Wallet DLMM position loading
  *
- * Uses Meteora's public Data API (no RPC) to fetch a wallet's open positions,
+ * Uses Meteora's public Data API to fetch a wallet's open positions,
  * group them by trading pair, then by pool, and reconstruct bin liquidity
- * for combined price simulation.
+ * for combined price simulation. Open-position transaction history is loaded
+ * via the Data API + `@geeklad/meteora-dlmm-liquidity-tx-parser` when possible.
  */
 
 import {
@@ -16,6 +17,10 @@ import {
 import { fetchPoolByAddress, type MeteoraPair } from './meteora-api';
 import { toSimulatorBinId } from './dlmm-sdk-wrapper';
 import { fetchOnChainPositionLiquidity } from './onchain-bins';
+import {
+  loadPositionHistory,
+  type LoadedPositionHistory,
+} from './position-history';
 
 const METEORA_API_BASE = 'https://dlmm.datapi.meteora.ag';
 const REQUEST_GAP_MS = 40;
@@ -155,6 +160,10 @@ export interface LoadedPoolSimulation {
   minBinId: number;
   maxBinId: number;
   activeBinId: number;
+  /** Present when position txs were loaded and stacked successfully. */
+  history: LoadedPositionHistory | null;
+  /** True when chart/cost basis should use stacked history instead of on-chain snapshot. */
+  useHistoricalShape: boolean;
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -427,6 +436,11 @@ export async function loadPoolSimulation(options: {
     throw new Error('Could not load pool metadata');
   }
 
+  // Prefer on-chain pool decimals for history stacking / entry price so we do
+  // not bake reverse-engineered decimals into deposit cost basis.
+  const historyBaseDecimals = pool.decimals_x ?? baseDecimals;
+  const historyQuoteDecimals = pool.decimals_y ?? quoteDecimals;
+
   const activeBinId =
     positions.find(p => p.poolActiveBinId)?.poolActiveBinId ??
     0;
@@ -434,19 +448,23 @@ export async function loadPoolSimulation(options: {
 
   let bins: SimulatedBin[] = [];
   let positionBins: Record<string, SimulatedBin[]> = {};
+  let onChainCombined: SimulatedBin[] = [];
+  let onChainByPosition: Record<string, SimulatedBin[]> = {};
   const binStep = pool.bin_step || summary.binStep;
 
   try {
     const onChain = await fetchOnChainPositionLiquidity({
       positionAddresses: positions.map(position => position.positionAddress),
       binStep,
-      baseDecimals,
-      quoteDecimals,
+      baseDecimals: historyBaseDecimals,
+      quoteDecimals: historyQuoteDecimals,
       applyDecimalAdjustment,
       fallbackActiveBinId: fallbackActive,
     });
     bins = onChain.combined;
     positionBins = onChain.byPosition;
+    onChainCombined = onChain.combined;
+    onChainByPosition = onChain.byPosition;
   } catch {
     bins = [];
     positionBins = {};
@@ -456,8 +474,8 @@ export async function loadPoolSimulation(options: {
     bins = reconstructCombinedBins({
       positions,
       binStep,
-      baseDecimals,
-      quoteDecimals,
+      baseDecimals: historyBaseDecimals,
+      quoteDecimals: historyQuoteDecimals,
       applyDecimalAdjustment,
       fallbackActiveBinId: fallbackActive,
     });
@@ -478,8 +496,8 @@ export async function loadPoolSimulation(options: {
             baseAmount: position.baseAmount,
             quoteAmount: position.quoteAmount,
             strategy: 'spot',
-            baseDecimals,
-            quoteDecimals,
+            baseDecimals: historyBaseDecimals,
+            quoteDecimals: historyQuoteDecimals,
             applyDecimalAdjustment,
           })
         : [];
@@ -492,6 +510,44 @@ export async function loadPoolSimulation(options: {
     }
   }
 
+  const activePrice =
+    positions.find(p => p.poolActivePrice)?.poolActivePrice ||
+    pool.current_price ||
+    summary.poolPrice;
+
+  let history: LoadedPositionHistory | null = null;
+  let useHistoricalShape = false;
+  try {
+    history = await loadPositionHistory({
+      positionAddresses: positions.map(position => position.positionAddress),
+      binStep,
+      baseDecimals: historyBaseDecimals,
+      quoteDecimals: historyQuoteDecimals,
+      applyDecimalAdjustment,
+      currentActiveBinId: fallbackActive,
+      currentPrice: activePrice,
+      onChainByPosition,
+      onChainCombined,
+    });
+    if (history.stackedTxs.length > 0 && history.combinedBins.length > 0) {
+      useHistoricalShape = true;
+      bins = history.combinedBins;
+      positionBins = {
+        ...positionBins,
+        ...history.positionBins,
+      };
+      for (const position of positions) {
+        if (!(position.positionAddress in positionBins)) {
+          positionBins[position.positionAddress] = [];
+        }
+      }
+    }
+  } catch (error) {
+    console.warn('Failed to load position transaction history', error);
+    history = null;
+    useHistoricalShape = false;
+  }
+
   const combinedBaseAmount = bins.length
     ? bins.reduce((sum, bin) => sum + (bin.initialTokenType === 'base' ? bin.initialAmount : 0), 0)
     : positions.reduce((sum, p) => sum + p.baseAmount, 0);
@@ -502,10 +558,6 @@ export async function loadPoolSimulation(options: {
   const maxBinId = positions.length ? Math.max(...positions.map(p => p.upperBinId)) : 0;
   const combinedLowerPrice = bins.length ? bins[0].price : 0;
   const combinedUpperPrice = bins.length ? bins[bins.length - 1].price : 0;
-  const activePrice =
-    positions.find(p => p.poolActivePrice)?.poolActivePrice ||
-    pool.current_price ||
-    summary.poolPrice;
 
   return {
     pool,
@@ -521,5 +573,7 @@ export async function loadPoolSimulation(options: {
     minBinId,
     maxBinId,
     activeBinId: fallbackActive,
+    history,
+    useHistoricalShape,
   };
 }

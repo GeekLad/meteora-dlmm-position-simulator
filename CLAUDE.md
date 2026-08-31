@@ -38,7 +38,11 @@ The heart of the application implements the DLMM bin-based liquidity model:
 
 ### Wallet Positions (`src/lib/wallet-positions.ts`)
 
-Loads a wallet's open DLMM positions from the public Meteora Data API (`/portfolio/open` + `/positions/{pool}/pnl`), groups them by pair then pool, and reconstructs a combined bin distribution for price simulation. No Solana RPC required.
+Loads a wallet's open DLMM positions from the public Meteora Data API (`/portfolio/open` + `/positions/{pool}/pnl`), groups them by pair then pool, and reconstructs a combined bin distribution for price simulation. On-chain bin shares are preferred for live shape.
+
+### Position History (`src/lib/position-history.ts`)
+
+For open positions in a selected pool, loads transaction history via Meteora `GET /positions/{address}/historical`, fetches each signature with Solana RPC, and parses instructions with `@geeklad/meteora-dlmm-liquidity-tx-parser`. Stacked adds/removes drive entry price and deposit cost basis; claimed fees feed realized P&L. When inventory totals match on-chain but strategy weights differ, bin weights are reconciled to on-chain shares while keeping historical cost. Optional RPC override: `NEXT_PUBLIC_SOLANA_RPC_URL` or `localStorage.solanaRpcUrl`.
 
 
 ### Main Component (`src/components/dlmm-simulator.tsx`)

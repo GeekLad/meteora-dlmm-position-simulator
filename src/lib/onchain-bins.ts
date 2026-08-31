@@ -6,6 +6,7 @@
 import { PublicKey } from '@solana/web3.js';
 import { getPriceFromId, trimEmptyEdgeBins, type SimulatedBin } from './dlmm';
 import { toSimulatorBinId } from './dlmm-sdk-wrapper';
+import { rpcCall } from './solana-rpc';
 
 const DLMM_PROGRAM_ID = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
 const MAX_BIN_PER_ARRAY = 70;
@@ -14,9 +15,6 @@ const POSITION_BASE_SIZE = 8120;
 const POSITION_EXTRA_BIN_SIZE = 112;
 const BIN_SIZE = 144;
 const BIN_ARRAY_BINS_OFFSET = 56;
-const RPC_URLS = [
-  'https://solana-rpc.publicnode.com',
-];
 
 function viewOf(data: Uint8Array): DataView {
   return new DataView(data.buffer, data.byteOffset, data.byteLength);
@@ -66,32 +64,6 @@ function deriveBinArrayPda(lbPair: PublicKey, index: number): PublicKey {
     [new TextEncoder().encode('bin_array'), lbPair.toBytes(), i64le(index)],
     DLMM_PROGRAM_ID
   )[0];
-}
-
-async function rpcCall<T>(method: string, params: unknown[]): Promise<T> {
-  let lastError: Error | null = null;
-  for (const url of RPC_URLS) {
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-      });
-      if (!response.ok) {
-        lastError = new Error(`RPC ${response.status}`);
-        continue;
-      }
-      const json = await response.json() as { result?: T; error?: { message?: string } };
-      if (json.error) {
-        lastError = new Error(json.error.message || 'RPC error');
-        continue;
-      }
-      return json.result as T;
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error('RPC failed');
-    }
-  }
-  throw lastError ?? new Error('RPC unavailable');
 }
 
 async function getMultipleAccounts(addresses: string[]): Promise<(Uint8Array | null)[]> {

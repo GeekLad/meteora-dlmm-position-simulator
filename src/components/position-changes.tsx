@@ -65,6 +65,9 @@ interface PositionChangesProps {
   poolStartPrice?: number | null;
   emptyHint?: string;
   showRestore?: boolean;
+  /** When true, entry price came from on-chain deposit history — skip the set-initial-price prompt. */
+  entryPriceFromHistory?: boolean;
+  historyStatusMessage?: string | null;
 }
 
 const DUST = 1e-9;
@@ -138,6 +141,8 @@ export function PositionChanges({
   poolStartPrice = null,
   emptyHint,
   showRestore = true,
+  entryPriceFromHistory = false,
+  historyStatusMessage = null,
 }: PositionChangesProps) {
   const [activeForm, setActiveForm] = useState<SimulatedTxType | null>(
     () => (positions.length === 0 ? 'add-position' : null)
@@ -1239,10 +1244,16 @@ export function PositionChanges({
             </div>
           </div>
 
-          {showRestore && transactions.length === 0 && (
+          {showRestore && transactions.length === 0 && !entryPriceFromHistory && (
             <p className="rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs leading-snug">
               <span className="font-semibold">Set the initial price</span>
               {' '}on the Analysis chart. It is the cost basis for these loaded wallet positions and locks after the first simulated transaction.
+            </p>
+          )}
+
+          {showRestore && entryPriceFromHistory && historyStatusMessage && (
+            <p className="rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-xs leading-snug text-muted-foreground">
+              {historyStatusMessage}
             </p>
           )}
 
