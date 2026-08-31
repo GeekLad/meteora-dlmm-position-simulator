@@ -7,9 +7,10 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { getInitialBins, runSimulation, getIdFromPrice, getPriceFromId, rangeForDeposit, DEFAULT_POSITION_BINS, type SimulationParams, type Analysis, type SimulatedBin, type Strategy } from "@/lib/dlmm";
 import { LiquidityChart } from "@/components/liquidity-chart";
 import { Logo } from "@/components/icons";
-import { BarChart3, ExternalLink, Wallet, FlaskConical, Loader2, Undo2 } from "lucide-react";
+import { BarChart3, ChartScatter, Ellipsis, ExternalLink, Wallet, FlaskConical, Loader2, Undo2 } from "lucide-react";
 import { formatNumberForDisplay } from "@/lib/display-formatting";
 import { Button } from "./ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { PoolSelector } from "@/components/pool-selector";
 import { WalletLoader } from "@/components/wallet-loader";
@@ -47,6 +48,7 @@ import {
   type SimulatedTransaction,
 } from "@/lib/position-transactions";
 import { hasShareOverlay, hasShareTarget, parseShareSearchParams } from "@/lib/share-state";
+import { CHART_SCATTER_OPTIONS } from "@/lib/price-scatter";
 
 type PartialSimulationParams = Omit<SimulationParams, 'strategy' | 'binStep' | 'initialPrice' | 'baseAmount' | 'quoteAmount' | 'lowerPrice' | 'upperPrice'> & {
   strategy: Strategy;
@@ -115,15 +117,24 @@ function AnalysisStat({
   label,
   children,
   className,
+  dense,
 }: {
   label: string;
   children: ReactNode;
   className?: string;
+  dense?: boolean;
 }) {
   return (
-    <div className="flex min-w-0 flex-col gap-0.5 bg-gradient-to-br from-secondary/80 to-secondary/40 px-3 py-2.5">
+    <div className={cn(
+      "flex min-w-0 flex-col gap-0.5 bg-gradient-to-br from-secondary/80 to-secondary/40 px-3 py-2.5",
+      dense && "gap-0 px-2 py-1.5"
+    )}>
       <span className="truncate text-[10px] uppercase tracking-wide text-muted-foreground leading-tight">{label}</span>
-      <span className={cn("font-semibold tabular-nums text-[15px] leading-tight", className)}>{children}</span>
+      <span className={cn(
+        "font-semibold tabular-nums text-[15px] leading-tight",
+        dense && "text-[13px] truncate",
+        className
+      )}>{children}</span>
     </div>
   );
 }
@@ -157,6 +168,7 @@ export function DlmmSimulator() {
   const [simulatedTxs, setSimulatedTxs] = useState<SimulatedTransaction[]>([]);
   const [changeFocus, setChangeFocus] = useState<ChangeFocus | null>(null);
   const [mobileSection, setMobileSection] = useState<MobileSection>('position');
+  const [scatterOpen, setScatterOpen] = useState(false);
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -373,6 +385,29 @@ export function DlmmSimulator() {
 
   const handleCurrentPriceChange = (newCurrentPrice: number) => {
     setCurrentPrice(newCurrentPrice);
+  }
+
+  // Shock buttons move price the given percent from the initial price,
+  // snapped to the nearest bin like dragging the handle would.
+  const handlePriceShock = (pct: number) => {
+    if (typeof params.initialPrice !== 'number' || typeof params.binStep !== 'number') return;
+    const target = params.initialPrice * (1 + pct / 100);
+    const binId = getIdFromPrice(
+      target,
+      params.binStep,
+      baseDecimals,
+      quoteDecimals,
+      applyDecimalAdjustment
+    );
+    handleCurrentPriceChange(
+      getPriceFromId(binId, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment)
+    );
+  }
+
+  // Scatter buttons multiply the current price so repeated taps compound.
+  const handlePriceScatter = (pct: number) => {
+    if (typeof currentPrice !== 'number' || currentPrice <= 0) return;
+    handleCurrentPriceChange(currentPrice * (1 + pct / 100));
   }
 
   const applySimulatedTx = (tx: SimulatedTransaction) => {
@@ -963,7 +998,7 @@ export function DlmmSimulator() {
 
   return (
     <DlmmContext.Provider value={{params, baseDecimals, quoteDecimals, applyDecimalAdjustment, tokenSymbols}}>
-    <div className={cn("flex flex-col", showSimulation ? "gap-2 pb-20 lg:gap-8 lg:pb-0" : "gap-4 lg:gap-8")}>
+    <div className={cn("flex flex-col", showSimulation ? "gap-2 pb-[calc(3.5rem+env(safe-area-inset-bottom,0px))] lg:gap-8 lg:pb-0" : "gap-4 lg:gap-8")}>
       <header
         className={cn(
           "flex items-center justify-between rounded-2xl bg-gradient-to-r from-primary/10 via-purple-500/10 to-primary/10 border border-primary/20 backdrop-blur-sm",
@@ -1184,41 +1219,97 @@ export function DlmmSimulator() {
             </CardHeader>
             <CardContent className="flex flex-col gap-3 p-3 pt-0 lg:gap-4 lg:p-6 lg:pt-0">
               {canStackPositions && typeof params.initialPrice === 'number' && (
-                <div className="grid grid-cols-[auto_1fr_1fr_1fr_1fr] items-center gap-x-1.5 gap-y-2 sm:flex sm:flex-wrap sm:gap-2">
+                <div className="flex items-center justify-between gap-1.5">
                   <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">Price shock</span>
-                  {[-25, -10, -5, -1, 0, 1, 5, 10, 25].map((pct) => (
+                  {/* One-row on mobile: core ±% shocks inline, wide ±25% swings behind the overflow menu; all shown from sm up. */}
+                  {[-1, 0, 1].map((pct) => (
                     <Button
                       key={pct}
                       type="button"
                       variant={pct === 0 ? 'secondary' : 'outline'}
                       size="sm"
-                      className="h-8 min-w-0 shrink-0 px-2 text-xs sm:px-2.5"
+                      className="h-7 min-w-9 shrink-0 px-2 text-xs sm:hidden sm:min-w-0 sm:h-8 sm:px-2.5"
                       onClick={() => {
                         if (pct === 0) {
                           handleCurrentPriceChange(params.initialPrice as number);
                           return;
                         }
-                        const target = (params.initialPrice as number) * (1 + pct / 100);
-                        const binId = getIdFromPrice(
-                          target,
-                          params.binStep as number,
-                          baseDecimals,
-                          quoteDecimals,
-                          applyDecimalAdjustment
-                        );
-                        handleCurrentPriceChange(
-                          getPriceFromId(binId, params.binStep as number, baseDecimals, quoteDecimals, applyDecimalAdjustment)
-                        );
+                        handlePriceShock(pct);
                       }}
                     >
                       {pct === 0 ? 'Reset' : `${pct > 0 ? '+' : ''}${pct}%`}
                     </Button>
                   ))}
+                  <div className="hidden items-center gap-2 sm:flex sm:flex-wrap">
+                    {[-25, -10, -5, 1, 5, 10, 25].map((pct) => (
+                      <Button
+                        key={pct}
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 shrink-0 px-2.5 text-xs"
+                        onClick={() => handlePriceShock(pct)}
+                      >
+                        {`${pct > 0 ? '+' : ''}${pct}%`}
+                      </Button>
+                    ))}
+                  </div>
+                  <Popover open={scatterOpen} onOpenChange={setScatterOpen}>
+                    <PopoverTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-7 w-7 shrink-0 px-0 sm:hidden"
+                        aria-label="More price shocks"
+                      >
+                        <Ellipsis className="h-4 w-4" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-auto p-2" align="end">
+                      <p className="mb-1.5 px-1 text-[11px] text-muted-foreground">Price shock, % from initial · <ChartScatter className="inline h-3 w-3 text-muted-foreground" /> nudges current price</p>
+                      <div className="flex items-center gap-1.5">
+                        {[-25, -10, -5].map((pct) => (
+                          <Button
+                            key={pct}
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-8 px-2.5 text-xs"
+                            title={`Set price to ${pct}% from initial`}
+                            onClick={() => {
+                              handlePriceShock(pct);
+                              setScatterOpen(false);
+                            }}
+                          >
+                            {`${pct}%`}
+                          </Button>
+                        ))}
+                        {CHART_SCATTER_OPTIONS.map((pct) => (
+                          <Button
+                            key={pct}
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-8 gap-1 px-2 text-xs"
+                            title={`Multiply current price by ${pct > 0 ? '+' : ''}${pct}% (repeated taps compound)`}
+                            onClick={() => {
+                              handlePriceScatter(pct);
+                              setScatterOpen(false);
+                            }}
+                          >
+                            <ChartScatter className="h-3.5 w-3.5 text-muted-foreground" />
+                            {`${pct > 0 ? '+' : ''}${pct}%`}
+                          </Button>
+                        ))}
+                      </div>
+                    </PopoverContent>
+                  </Popover>
                 </div>
               )}
               <div className={cn(
-                "h-80 w-full lg:h-96",
-                !!walletBins && simulatedTxs.length === 0 && "h-[24.5rem] lg:h-[28rem]"
+                "h-64 w-full lg:h-96",
+                !!walletBins && simulatedTxs.length === 0 && "h-[19rem] lg:h-[28rem]"
               )}>
                 {simulationParams && decimalsDetermined && typeof currentPrice === 'number' && typeof params.initialPrice === 'number' && typeof params.lowerPrice === 'number' && typeof params.upperPrice === 'number' ? (
                   <LiquidityChart
@@ -1243,7 +1334,63 @@ export function DlmmSimulator() {
               </div>
               {analysis && (
                 <div className="flex flex-col gap-2">
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-px overflow-hidden rounded-xl border border-border/50 bg-border/50">
+                  {/* Mobile: every desktop stat, grouped so related values share a row —
+                      Net P&L % sits directly under Net P&L (same column). */}
+                  <div className="grid grid-cols-3 gap-px overflow-hidden rounded-xl border border-border/50 bg-border/50 sm:hidden">
+                    <AnalysisStat label="Net In." dense>
+                      <FormattedNumber value={netInvestment} maximumFractionDigits={quoteDecimals} />
+                    </AnalysisStat>
+                    <AnalysisStat label="Pos Value" dense>
+                      <FormattedNumber value={analysis.totalValueInQuote} maximumFractionDigits={quoteDecimals} />
+                    </AnalysisStat>
+                    <AnalysisStat label="Net P&L" dense className={pnlColorClass(netPnl)}>
+                      <FormattedNumber value={netPnl} maximumFractionDigits={quoteDecimals} />
+                    </AnalysisStat>
+                    <AnalysisStat label="Unreal. P&L" dense className={pnlColorClass(unrealizedPnl)}>
+                      <FormattedNumber value={unrealizedPnl} maximumFractionDigits={quoteDecimals} />
+                    </AnalysisStat>
+                    <AnalysisStat label="Real. P&L" dense className={pnlColorClass(realizedPnlValue)}>
+                      <FormattedNumber value={realizedPnlValue} maximumFractionDigits={quoteDecimals} />
+                    </AnalysisStat>
+                    <AnalysisStat label="Net P&L" dense className={valueChangeColorClass}>
+                      {valueChangeDisplay}
+                    </AnalysisStat>
+                    <AnalysisStat label="Init Price" dense>
+                      {typeof params.initialPrice === 'number' ? (
+                        <FormattedNumber value={params.initialPrice} maximumFractionDigits={quoteDecimals} />
+                      ) : '—'}
+                    </AnalysisStat>
+                    <AnalysisStat label="Price Chg" dense className={priceChangeColorClass}>
+                      {priceChangeDisplay}
+                    </AnalysisStat>
+                    <AnalysisStat label="Breakeven" dense>
+                      {breakevenPrice != null ? (
+                        <FormattedNumber value={breakevenPrice} maximumFractionDigits={quoteDecimals} />
+                      ) : 'N/A'}
+                    </AnalysisStat>
+                    <AnalysisStat label={`${tokenSymbols.base} Tokens`} dense>
+                      <FormattedNumber value={displayBase} maximumFractionDigits={quoteDecimals} />
+                    </AnalysisStat>
+                    <AnalysisStat label={`${tokenSymbols.quote} Tokens`} dense>
+                      <FormattedNumber value={displayQuote} maximumFractionDigits={quoteDecimals} />
+                    </AnalysisStat>
+                    <AnalysisStat label={avgPriceLabel} dense>
+                      <FormattedNumber value={averagePricePaid} maximumFractionDigits={quoteDecimals} />
+                    </AnalysisStat>
+                    <AnalysisStat
+                      label="Cur. Value"
+                      dense
+                      className={pocketedCash > 1e-9 ? 'col-span-2' : 'col-span-3'}
+                    >
+                      <FormattedNumber value={portfolioValue} maximumFractionDigits={quoteDecimals} />
+                    </AnalysisStat>
+                    {pocketedCash > 1e-9 && (
+                      <AnalysisStat label="Pocketed" dense>
+                        <FormattedNumber value={pocketedCash} maximumFractionDigits={quoteDecimals} />
+                      </AnalysisStat>
+                    )}
+                  </div>
+                  <div className="hidden grid-cols-2 gap-px overflow-hidden rounded-xl border border-border/50 bg-border/50 sm:grid-cols-4 sm:grid">
                     <AnalysisStat label="Net Investment">
                       <FormattedNumber value={netInvestment} maximumFractionDigits={quoteDecimals} />
                     </AnalysisStat>

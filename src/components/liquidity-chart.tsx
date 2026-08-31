@@ -357,8 +357,8 @@ export function LiquidityChart({
 
   return (
         <div className="flex flex-col h-full w-full justify-between relative">
-          {/* Chart Price Display Toggle - positioned at top */}
-          <div className="flex shrink-0 items-center gap-2 mb-3 px-3 py-1.5 bg-card/80 backdrop-blur-sm rounded-md border border-border/50 shadow-sm self-start">
+          {/* Chart Price Display Toggle - positioned at top. Hidden on mobile to keep the chart above the tab bar; the toggle still exists from sm up. */}
+          <div className="hidden sm:flex shrink-0 items-center gap-2 mb-3 px-3 py-1.5 bg-card/80 backdrop-blur-sm rounded-md border border-border/50 shadow-sm self-start">
             <Switch checked={useCurrentPrice} onCheckedChange={setUseCurrentPrice} />
             <label className="text-xs text-muted-foreground font-medium whitespace-nowrap">Display Actual {tokenSymbols.quote} Value</label>
             <TooltipProvider delayDuration={0}>
@@ -379,7 +379,7 @@ export function LiquidityChart({
             </TooltipProvider>
           </div>
           {showInitialPricePrompt && (
-            <div className="mb-3 w-full shrink-0 rounded-lg border border-primary/40 bg-primary/10 px-3 py-2 text-xs leading-snug">
+            <div className="mb-2 w-full shrink-0 rounded-lg border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs leading-snug">
               <span className="font-semibold text-foreground">Set the initial price</span>
               <span className="text-muted-foreground">
                 {' '}using the handle below the chart. It is the cost basis for your loaded wallet positions and locks after the first simulated transaction.
@@ -387,10 +387,11 @@ export function LiquidityChart({
             </div>
           )}
           <div className="relative w-full min-h-0 flex-grow" ref={chartRef}>
-          <div className="flex h-full w-full flex-col">
-          {/* Spacer so Current Price sits below the toggle/banner instead of covering it. */}
+          <div className={cn('flex h-full w-full flex-col', !showInitialPricePrompt && 'pt-11 lg:pt-0')}>
+          {/* Spacer so Current Price sits below the toggle/banner instead of covering it.
+              Mobile has no toggle row, so the banner alone (when showing) reserves space. */}
           <div
-            className={cn('h-14 shrink-0', !showInitialPricePrompt && 'lg:hidden')}
+            className={cn('h-14 shrink-0', !showInitialPricePrompt && 'hidden', showInitialPricePrompt && 'h-12 lg:h-14')}
             aria-hidden
           />
           {/* Liquidity Bins */}
@@ -443,7 +444,7 @@ export function LiquidityChart({
           <div
             className={cn(
               'pointer-events-none absolute inset-x-0 z-20 h-14',
-              showInitialPricePrompt ? 'top-0' : 'top-0 lg:top-[-50px]'
+              showInitialPricePrompt ? 'top-0' : 'top-0 lg:top-[-50px] lg:block'
             )}
           >
             <div
@@ -465,7 +466,7 @@ export function LiquidityChart({
             <div
               className={cn(
                 'absolute bottom-0 left-1/2 w-0.5 -translate-x-1/2 bg-gradient-to-b from-primary/80 to-primary/40 border-l border-dashed border-foreground/80 shadow-lg',
-                showInitialPricePrompt ? 'top-14' : 'top-14 lg:top-[-8px]'
+                showInitialPricePrompt ? 'top-14' : 'top-11 lg:top-[-8px]'
               )}
               style={{ boxShadow: '0 0 10px rgba(66, 153, 225, 0.5)' }}
             />
@@ -603,7 +604,7 @@ export function LiquidityChart({
             </div>
             <div className={cn(
               "text-[10px] leading-tight whitespace-nowrap",
-              promptSetInitialPrice ? "font-medium text-primary" : "text-muted-foreground"
+              promptSetInitialPrice ? "font-medium text-primary hidden lg:block" : "text-muted-foreground"
             )}>
               {promptSetInitialPrice ? 'Drag to set simulation cost basis' : 'Simulation cost basis'}
             </div>
