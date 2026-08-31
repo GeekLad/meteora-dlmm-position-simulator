@@ -42,7 +42,7 @@ Loads a wallet's open DLMM positions from the public Meteora Data API (`/portfol
 
 ### Position History (`src/lib/position-history.ts`)
 
-For open positions in a selected pool, loads transaction history via Meteora `GET /positions/{address}/historical`, fetches each signature with Solana RPC, and parses instructions with `@geeklad/meteora-dlmm-liquidity-tx-parser`. Stacked adds/removes drive entry price and deposit cost basis; claimed fees feed realized P&L. When inventory totals match on-chain but strategy weights differ, bin weights are reconciled to on-chain shares while keeping historical cost. Optional RPC override: `NEXT_PUBLIC_SOLANA_RPC_URL` or `localStorage.solanaRpcUrl`.
+For open positions in a selected pool, loads transaction history via Meteora `GET /positions/{address}/historical`, fetches each signature with Solana RPC, and parses instructions with `@geeklad/meteora-dlmm-liquidity-tx-parser`. Adds/removes are applied **sequentially** (convert inventory to that tx's active price, then add or remove) so later deposits compound on earlier ones. Entry price and cost basis come from that history; claimed fees feed realized P&L. Parsed txs are stored in a versioned IndexedDB cache (`HISTORY_CACHE_VERSION` in `src/lib/tx-cache.ts` — bump it to force every client to refetch). Optional RPC override: `NEXT_PUBLIC_SOLANA_RPC_URL` or `localStorage.solanaRpcUrl`.
 
 
 ### Main Component (`src/components/dlmm-simulator.tsx`)

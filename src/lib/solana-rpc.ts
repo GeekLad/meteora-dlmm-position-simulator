@@ -14,7 +14,6 @@ import { Connection, type ParsedTransactionWithMeta } from '@solana/web3.js';
 const BUILTIN_RPC_URLS = [
   // Archive-capable; works from Node and often from browsers (CORS *).
   'https://solana.leorpc.com/?api_key=FREE',
-  'https://api.mainnet-beta.solana.com',
   'https://solana-rpc.publicnode.com',
 ];
 

@@ -6,7 +6,15 @@
  */
 
 import type { DlmmInstruction, DlmmStrategy } from '@geeklad/meteora-dlmm-liquidity-tx-parser';
-import { getPriceFromId, type SimulatedBin, type Strategy } from './dlmm';
+import {
+  getInitialBinsForBinRange,
+  getPriceFromId,
+  mergeSimulatedBins,
+  runSimulation,
+  trimEmptyEdgeBins,
+  type SimulatedBin,
+  type Strategy,
+} from './dlmm';
 import { toSimulatorBinId } from './dlmm-sdk-wrapper';
 import {
   analyzeCurrentBins,
@@ -22,6 +30,10 @@ import {
   type SimulatedTransaction,
 } from './position-transactions';
 import { getParsedTransaction, mapWithThrottle } from './solana-rpc';
+import {
+  readCachedInstructions,
+  writeCachedInstructions,
+} from './tx-cache';
 
 const METEORA_API_BASE = 'https://dlmm.datapi.meteora.ag';
 const REQUEST_GAP_MS = 40;
@@ -178,6 +190,45 @@ async function loadParseMeteoraTransaction() {
   return mod.parseMeteoraTransaction;
 }
 
+function parseTransactionSafe(
+  parse: Awaited<ReturnType<typeof loadParseMeteoraTransaction>>,
+  tx: Parameters<Awaited<ReturnType<typeof loadParseMeteoraTransaction>>>[0]
+): { instructions: DlmmInstruction[]; error?: string } {
+  try {
+    return { instructions: parse(tx, true) };
+  } catch (error) {
+    return {
+      instructions: [],
+      error: error instanceof Error ? error.message : 'parse failed',
+    };
+  }
+}
+
+function mapApiEventType(eventType: string): DlmmInstruction['type'] {
+  switch (eventType) {
+    case 'remove': return 'RemoveLiquidity';
+    case 'claim_fee': return 'ClaimFees';
+    case 'claim_reward': return 'ClaimRewards';
+    default: return 'AddLiquidity';
+  }
+}
+
+function synthesizeInstructionsFromApi(
+  signature: string,
+  apiEvents: MeteoraPositionEvent[]
+): DlmmInstruction[] {
+  return apiEvents.map(api => ({
+    signature,
+    signer: api.userAddress,
+    slot: api.slot,
+    timestamp: new Date(api.blockTime > 1e12 ? api.blockTime : api.blockTime * 1000),
+    fee: 0,
+    type: mapApiEventType(api.eventType),
+    position: api.positionAddress,
+    pool: api.poolAddress,
+  }));
+}
+
 function strategyFromParser(strategy: DlmmStrategy | undefined): Strategy {
   if (strategy === 'Curve') return 'curve';
   if (strategy === 'BidAsk') return 'bid-ask';
@@ -187,6 +238,315 @@ function strategyFromParser(strategy: DlmmStrategy | undefined): Strategy {
 function rawToUi(amount: number | undefined, decimals: number): number {
   if (!(amount != null) || !Number.isFinite(amount)) return 0;
   return amount / Math.pow(10, decimals);
+}
+
+function instructionAmounts(
+  event: PositionHistoryEvent,
+  baseDecimals: number,
+  quoteDecimals: number
+): { base: number; quote: number } {
+  const fromParserBase = rawToUi(event.instruction.amount_x, baseDecimals);
+  const fromParserQuote = rawToUi(event.instruction.amount_y, quoteDecimals);
+  if (fromParserBase > 0 || fromParserQuote > 0) {
+    return { base: fromParserBase, quote: fromParserQuote };
+  }
+  if (event.api) {
+    return { base: event.api.amountX, quote: event.api.amountY };
+  }
+  return { base: 0, quote: 0 };
+}
+
+/** Treat current inventory as the new initial so the next price move compounds. */
+function freezeCurrentAsInitial(bins: SimulatedBin[]): SimulatedBin[] {
+  return bins.map(bin => ({
+    ...bin,
+    initialTokenType: bin.currentTokenType,
+    initialAmount: bin.currentAmount,
+    initialDisplayValue:
+      bin.currentTokenType === 'base'
+        ? bin.currentAmount * bin.price
+        : bin.currentAmount,
+  }));
+}
+
+function rebaseInventory(
+  bins: SimulatedBin[],
+  toPrice: number
+): SimulatedBin[] {
+  if (bins.length === 0 || !(toPrice > 0)) return bins;
+  return freezeCurrentAsInitial(
+    runSimulation(cloneBins(bins), toPrice, toPrice).simulatedBins
+  );
+}
+
+function removeTokensInRange(
+  bins: SimulatedBin[],
+  minBinId: number,
+  maxBinId: number,
+  removeBase: number,
+  removeQuote: number
+): SimulatedBin[] {
+  let baseTotal = 0;
+  let quoteTotal = 0;
+  for (const bin of bins) {
+    if (bin.id < minBinId || bin.id > maxBinId || bin.currentAmount <= 1e-18) continue;
+    if (bin.currentTokenType === 'base') baseTotal += bin.currentAmount;
+    else quoteTotal += bin.currentAmount;
+  }
+  const baseFactor = baseTotal > 1e-18 ? Math.min(1, Math.max(0, removeBase / baseTotal)) : 0;
+  const quoteFactor = quoteTotal > 1e-18 ? Math.min(1, Math.max(0, removeQuote / quoteTotal)) : 0;
+  if (baseFactor <= 0 && quoteFactor <= 0) return bins;
+
+  return bins.map(bin => {
+    if (bin.id < minBinId || bin.id > maxBinId) return bin;
+    const factor = 1 - (bin.currentTokenType === 'base' ? baseFactor : quoteFactor);
+    if (factor >= 1) return bin;
+    return {
+      ...bin,
+      initialAmount: bin.initialAmount * factor,
+      initialValueInQuote: bin.initialValueInQuote * factor,
+      initialDisplayValue: bin.initialDisplayValue * factor,
+      currentAmount: bin.currentAmount * factor,
+      currentValueInQuote: bin.currentValueInQuote * factor,
+    };
+  });
+}
+
+function addDepositBins(
+  existing: SimulatedBin[],
+  deposit: SimulatedBin[],
+  replay: ReplayOptions
+): SimulatedBin[] {
+  if (deposit.length === 0) return existing;
+  if (existing.length === 0) return deposit;
+  return mergeSimulatedBins([existing, deposit], {
+    binStep: replay.binStep,
+    baseDecimals: replay.baseDecimals,
+    quoteDecimals: replay.quoteDecimals,
+    applyDecimalAdjustment: replay.applyDecimalAdjustment,
+    activeBinId: replay.activeBinId,
+    fillGaps: true,
+  });
+}
+
+interface SequentialStackResult {
+  slices: LiquiditySlice[];
+  stackedTxs: SimulatedTransaction[];
+  claimedFees: ClaimedFeesSummary;
+  initialPrice: number;
+  initialActiveBinId: number;
+}
+
+function orderEventsForStack(events: PositionHistoryEvent[]): PositionHistoryEvent[] {
+  const grouped = new Map<string, PositionHistoryEvent[]>();
+  const order: string[] = [];
+  for (const event of events) {
+    const key = `${event.signature}:${event.positionAddress}`;
+    if (!grouped.has(key)) {
+      grouped.set(key, []);
+      order.push(key);
+    }
+    grouped.get(key)!.push(event);
+  }
+  const result: PositionHistoryEvent[] = [];
+  for (const key of order) {
+    const group = grouped.get(key)!;
+    const isRebalance = group.some(event =>
+      event.instruction.type === 'AddLiquidity' && group.some(other => other.instruction.type === 'RemoveLiquidity')
+    );
+    if (isRebalance) {
+      // On-chain rebalance withdraws old bins then deposits the new shape.
+      result.push(
+        ...group.filter(event => event.instruction.type === 'RemoveLiquidity'),
+        ...group.filter(event => event.instruction.type === 'AddLiquidity'),
+        ...group.filter(event =>
+          event.instruction.type !== 'RemoveLiquidity' && event.instruction.type !== 'AddLiquidity'
+        )
+      );
+    } else {
+      result.push(...group);
+    }
+  }
+  return result;
+}
+
+function stackPositionsSequentially(
+  events: PositionHistoryEvent[],
+  replay: ReplayOptions,
+  currentPrice: number,
+  knownPositions: string[]
+): SequentialStackResult {
+  const pendingRange = new Map<string, { lowerBinId: number; upperBinId: number }>();
+  const binsByPosition = new Map<string, SimulatedBin[]>();
+  const opened = new Set<string>();
+  const stackedTxs: SimulatedTransaction[] = [];
+  const claimedFees: ClaimedFeesSummary = { base: 0, quote: 0, usd: 0 };
+  let initialPrice = 0;
+  let initialActiveBinId = 0;
+  let lastPrice = 0;
+
+  const replayAt = (activeBinId: number): ReplayOptions => ({
+    ...replay,
+    activeBinId: activeBinId || replay.activeBinId,
+  });
+
+  for (const event of orderEventsForStack(events)) {
+    const ix = event.instruction;
+    const positionAddress = event.positionAddress;
+
+    if (ix.type === 'CreatePosition') {
+      if (ix.lower_bin_id != null && ix.upper_bin_id != null) {
+        pendingRange.set(positionAddress, {
+          lowerBinId: toSimulatorBinId(ix.lower_bin_id),
+          upperBinId: toSimulatorBinId(ix.upper_bin_id),
+        });
+      }
+      continue;
+    }
+
+    if (ix.type === 'ClaimFees' || ix.type === 'ClaimRewards') {
+      claimedFees.base += rawToUi(ix.amount_x, replay.baseDecimals);
+      claimedFees.quote += rawToUi(ix.amount_y, replay.quoteDecimals);
+      if (event.api) claimedFees.usd += event.api.totalUsd;
+      continue;
+    }
+
+    if (ix.type === 'ClosePosition') continue;
+    if (ix.type !== 'AddLiquidity' && ix.type !== 'RemoveLiquidity') continue;
+
+    const onChainActive = ix.active_bin_id;
+    const activeSimId = onChainActive != null ? toSimulatorBinId(onChainActive) : 0;
+    const price = activeSimId
+      ? getPriceFromId(
+          activeSimId,
+          replay.binStep,
+          replay.baseDecimals,
+          replay.quoteDecimals,
+          replay.applyDecimalAdjustment
+        )
+      : lastPrice;
+
+    const rangeFromIx =
+      ix.lower_bin_id != null && ix.upper_bin_id != null
+        ? {
+            lowerBinId: toSimulatorBinId(ix.lower_bin_id),
+            upperBinId: toSimulatorBinId(ix.upper_bin_id),
+          }
+        : pendingRange.get(positionAddress);
+    if (!rangeFromIx || rangeFromIx.upperBinId < rangeFromIx.lowerBinId) continue;
+
+    if (price > 0) {
+      for (const [address, bins] of binsByPosition) {
+        binsByPosition.set(address, rebaseInventory(bins, price));
+      }
+      lastPrice = price;
+    }
+
+    const amounts = instructionAmounts(event, replay.baseDecimals, replay.quoteDecimals);
+    const lowerPrice = getPriceFromId(
+      rangeFromIx.lowerBinId,
+      replay.binStep,
+      replay.baseDecimals,
+      replay.quoteDecimals,
+      replay.applyDecimalAdjustment
+    );
+    const upperPrice = getPriceFromId(
+      rangeFromIx.upperBinId,
+      replay.binStep,
+      replay.baseDecimals,
+      replay.quoteDecimals,
+      replay.applyDecimalAdjustment
+    );
+
+    if (ix.type === 'AddLiquidity') {
+      if (!(initialPrice > 0) && price > 0) {
+        initialPrice = price;
+        initialActiveBinId = activeSimId;
+      }
+      const deposit = getInitialBinsForBinRange({
+        binStep: replay.binStep,
+        minBinId: rangeFromIx.lowerBinId,
+        maxBinId: rangeFromIx.upperBinId,
+        activeBinId: activeSimId || replay.activeBinId,
+        baseAmount: amounts.base,
+        quoteAmount: amounts.quote,
+        strategy: strategyFromParser(ix.strategy),
+        baseDecimals: replay.baseDecimals,
+        quoteDecimals: replay.quoteDecimals,
+        applyDecimalAdjustment: replay.applyDecimalAdjustment,
+      });
+      const existing = binsByPosition.get(positionAddress) ?? [];
+      binsByPosition.set(
+        positionAddress,
+        addDepositBins(existing, deposit, replayAt(activeSimId))
+      );
+      const isFirst = !opened.has(positionAddress);
+      stackedTxs.push({
+        id: `hist-${event.signature}-${stackedTxs.length}`,
+        type: isFirst ? 'add-position' : 'add-liquidity',
+        price: price || lowerPrice,
+        strategy: strategyFromParser(ix.strategy),
+        baseAmount: amounts.base,
+        quoteAmount: amounts.quote,
+        lowerPrice,
+        upperPrice,
+        positionAddress,
+        removeBps: 0,
+      });
+      opened.add(positionAddress);
+      pendingRange.set(positionAddress, rangeFromIx);
+      continue;
+    }
+
+    const existing = binsByPosition.get(positionAddress) ?? [];
+    if (existing.length > 0) {
+      binsByPosition.set(
+        positionAddress,
+        removeTokensInRange(
+          existing,
+          rangeFromIx.lowerBinId,
+          rangeFromIx.upperBinId,
+          amounts.base,
+          amounts.quote
+        )
+      );
+    }
+    stackedTxs.push({
+      id: `hist-${event.signature}-${stackedTxs.length}`,
+      type: 'remove-liquidity',
+      price: price || lowerPrice,
+      strategy: 'spot',
+      baseAmount: amounts.base,
+      quoteAmount: amounts.quote,
+      lowerPrice,
+      upperPrice,
+      positionAddress,
+      removeBps: 0,
+    });
+  }
+
+  const displayPrice = currentPrice > 0 ? currentPrice : lastPrice || initialPrice;
+  const slices: LiquiditySlice[] = [];
+  const known = new Set(knownPositions);
+  for (const [positionAddress, bins] of binsByPosition) {
+    const atCurrent = displayPrice > 0 ? rebaseInventory(bins, displayPrice) : bins;
+    const liquid = trimEmptyEdgeBins(atCurrent);
+    if (liquid.length === 0) continue;
+    slices.push({
+      id: `historical-${positionAddress}`,
+      positionAddress,
+      isSimulatedPosition: !known.has(positionAddress),
+      openedAtPrice: initialPrice || displayPrice,
+      bins: liquid,
+      scale: 1,
+      minPrice: liquid[0].price,
+      maxPrice: liquid[liquid.length - 1].price,
+      lowerBinId: liquid[0].id,
+      upperBinId: liquid[liquid.length - 1].id,
+    });
+  }
+
+  return { slices, stackedTxs, claimedFees, initialPrice, initialActiveBinId };
 }
 
 function instructionOrder(type: string): number {
@@ -253,9 +613,27 @@ export async function fetchParsedPositionHistory(
 
   const ingestSignature = async (signature: string): Promise<'ok' | 'missing' | 'error'> => {
     try {
-      const raw = await getParsedTransaction(signature);
-      if (!raw) return 'missing';
-      const parsed = parseMeteoraTransaction(raw);
+      let parsed = await readCachedInstructions(signature);
+      if (!parsed) {
+        const raw = await getParsedTransaction(signature);
+        if (!raw) {
+          const fallback = synthesizeInstructionsFromApi(signature, apiBySignature.get(signature) ?? []);
+          if (fallback.length === 0) return 'missing';
+          parsed = fallback;
+        } else {
+          const result = parseTransactionSafe(parseMeteoraTransaction, raw);
+          if (result.error) {
+            parseErrors.push(`${signature}: ${result.error}`);
+          }
+          parsed = result.instructions.length > 0
+            ? result.instructions
+            : synthesizeInstructionsFromApi(signature, apiBySignature.get(signature) ?? []);
+          if (parsed.length === 0) return 'error';
+          if (result.instructions.length > 0) {
+            await writeCachedInstructions(signature, parsed);
+          }
+        }
+      }
       const apiEvents = apiBySignature.get(signature) ?? [];
       for (const instruction of parsed) {
         if (!wanted.has(instruction.position)) continue;
@@ -686,16 +1064,7 @@ export async function loadPositionHistory(
   const { events, eventsByPosition, missingSignatures, parseErrors } =
     await fetchParsedPositionHistory(positionAddresses);
 
-  const mapped = toSimulatedTxs(events, {
-    baseDecimals,
-    quoteDecimals,
-    binStep,
-    applyDecimalAdjustment,
-  });
-
-  // Reconstruction stays on the first-deposit active bin so cost basis is
-  // preserved; current price is applied via simulateSlices for validation/display.
-  const replayActiveBinId = mapped.initialActiveBinId || currentActiveBinId;
+  const replayActiveBinId = currentActiveBinId;
   const replay: ReplayOptions = {
     binStep,
     baseDecimals,
@@ -704,19 +1073,27 @@ export async function loadPositionHistory(
     activeBinId: replayActiveBinId,
   };
 
-  const stackedTxs = refineRemoveBps(mapped.stackedTxs, replay);
-  const historicalSlices = stackHistoricalSlices(stackedTxs, replay, positionAddresses);
+  const sequential = stackPositionsSequentially(
+    events,
+    replay,
+    currentPrice,
+    positionAddresses
+  );
+  const stackedTxs = sequential.stackedTxs;
+  const historicalSlices = sequential.slices;
   const positionBins = binsByPosition(historicalSlices, replay);
   const combinedBins = historicalSlices.length
-    ? combineSliceBins(historicalSlices, replay)
+    ? combineSliceBins(historicalSlices, {
+        ...replay,
+        activeBinId: sequential.initialActiveBinId || replay.activeBinId,
+      })
     : [];
 
   const stackedAtCurrent = historicalSlices.length
-    ? simulateSlices(
-        historicalSlices,
-        currentPrice > 0 ? currentPrice : mapped.initialPrice || 1e-12,
-        replay
-      )
+    ? combineSliceBins(historicalSlices, {
+        ...replay,
+        activeBinId: currentActiveBinId || sequential.initialActiveBinId,
+      })
     : [];
 
   const onChainForValidation = onChainCombined.length
@@ -741,57 +1118,48 @@ export async function loadPositionHistory(
   let finalCombined = combinedBins;
   let reconciledToOnChain = false;
 
-  // Prefer live on-chain share weights whenever available. Strategy replay is a
-  // good cost-basis source but often diverges on per-bin weights (and further
-  // when a few historical signatures fail to fetch). Overlay deposit cost onto
-  // on-chain inventory so the chart matches chain while P&L stays history-based.
-  if (Object.keys(onChainByPosition).length > 0 && historicalSlices.length > 0) {
-    const histCost = slicesCostBasis(historicalSlices);
-    const reconciled: LiquiditySlice[] = [];
-    const nextPositionBins: Record<string, SimulatedBin[]> = {};
-
-    for (const address of positionAddresses) {
-      const onChainBins = onChainByPosition[address] ?? [];
-      if (onChainBins.length === 0) continue;
-      const addressCost = historicalSlices
-        .filter(slice => slice.positionAddress === address)
-        .reduce((sum, slice) => sum + costBasis(slice.bins, slice.scale), 0);
-      const costForAddress = addressCost > 0
-        ? addressCost
-        : histCost / Math.max(1, positionAddresses.length);
-      const priced = applyCostBasisToBins(cloneBins(onChainBins), costForAddress);
-      nextPositionBins[address] = priced;
-      const host = historicalSlices.find(slice => slice.positionAddress === address);
-      reconciled.push({
-        id: `historical-onchain-${address}`,
-        positionAddress: address,
-        isSimulatedPosition: false,
-        openedAtPrice: mapped.initialPrice || host?.openedAtPrice || currentPrice,
-        bins: priced,
-        scale: 1,
-        minPrice: priced[0]?.price ?? host?.minPrice ?? 0,
-        maxPrice: priced[priced.length - 1]?.price ?? host?.maxPrice ?? 0,
-        lowerBinId: priced[0]?.id ?? host?.lowerBinId ?? 0,
-        upperBinId: priced[priced.length - 1]?.id ?? host?.upperBinId ?? 0,
-      });
-    }
-
-    if (reconciled.length > 0) {
-      finalSlices = reconciled;
-      finalPositionBins = nextPositionBins;
-      finalCombined = combineSliceBins(reconciled, replay);
-      reconciledToOnChain = true;
-      const missingNote = missingSignatures.length > 0
-        ? ` ${missingSignatures.length} historical signature(s) could not be fetched; cost basis may be incomplete.`
-        : '';
-      shapeValidation = {
-        ...shapeValidation,
-        ok: shapeValidation.totalsOk || missingSignatures.length === 0,
-        message: shapeValidation.totalsOk
-          ? `On-chain bin weights with historical cost basis.${missingNote}`
-          : `On-chain bin weights with historical cost basis (strategy replay inventory differed).${missingNote}`,
+  // Sequential stack is the displayed shape. If live totals differ slightly
+  // (fees, dust), scale current inventory to match live token totals without
+  // replacing the stacked distribution.
+  if (
+    !shapeValidation.totalsOk
+    && onChainForValidation.length > 0
+    && historicalSlices.length > 0
+    && (shapeValidation.onChainBase > 0 || shapeValidation.onChainQuote > 0)
+  ) {
+    const baseScale = shapeValidation.stackedBase > 1e-12
+      ? shapeValidation.onChainBase / shapeValidation.stackedBase
+      : 1;
+    const quoteScale = shapeValidation.stackedQuote > 1e-12
+      ? shapeValidation.onChainQuote / shapeValidation.stackedQuote
+      : 1;
+    const scaleInventory = (bins: SimulatedBin[]): SimulatedBin[] => bins.map(bin => {
+      const scale = bin.currentTokenType === 'base' ? baseScale : quoteScale;
+      if (Math.abs(scale - 1) < 1e-12) return bin;
+      return {
+        ...bin,
+        currentAmount: bin.currentAmount * scale,
+        currentValueInQuote: bin.currentValueInQuote * scale,
+        initialAmount: bin.initialAmount * scale,
+        initialDisplayValue: bin.initialDisplayValue * scale,
       };
-    }
+    });
+    finalSlices = historicalSlices.map(slice => ({
+      ...slice,
+      bins: scaleInventory(slice.bins),
+    }));
+    finalPositionBins = binsByPosition(finalSlices, replay);
+    finalCombined = combineSliceBins(finalSlices, {
+      ...replay,
+      activeBinId: currentActiveBinId || sequential.initialActiveBinId,
+    });
+    reconciledToOnChain = true;
+    shapeValidation = {
+      ...shapeValidation,
+      ok: true,
+      totalsOk: true,
+      message: `Stacked history aligned to live token totals (base ×${baseScale.toFixed(4)}, quote ×${quoteScale.toFixed(4)}).`,
+    };
   }
 
   return {
@@ -801,9 +1169,9 @@ export async function loadPositionHistory(
     historicalSlices: finalSlices,
     positionBins: finalPositionBins,
     combinedBins: finalCombined,
-    initialPrice: mapped.initialPrice,
-    initialActiveBinId: mapped.initialActiveBinId,
-    claimedFees: mapped.claimedFees,
+    initialPrice: sequential.initialPrice,
+    initialActiveBinId: sequential.initialActiveBinId,
+    claimedFees: sequential.claimedFees,
     shapeValidation,
     reconciledToOnChain,
     parseErrors,
