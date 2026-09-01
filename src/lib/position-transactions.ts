@@ -36,8 +36,10 @@ export interface LiquidityBinSpec {
 
 /**
  * Rebalance add segment (from parser `rebalance.adds`).
- * `x0`/`y0`/`delta_*` are liquidity-shape parameters used as relative weights,
- * then normalized to the tx's `baseAmount` / `quoteAmount`.
+ * On-chain stores absolute `x0`/`y0`/`delta_*` with signs in `bitFlag`
+ * (bit1=x0, bit2=y0, bit4=deltaX, bit8=deltaY), matching SDK
+ * `buildBitFlagAndNegateStrategyParameters`. Ask/bid amounts follow
+ * `toAmountIntoBins`, then normalize to the tx totals.
  */
 export interface RebalanceAddSpec {
   minDeltaId: number;
@@ -48,6 +50,12 @@ export interface RebalanceAddSpec {
   deltaY: number;
   favorXInActiveId: boolean;
   bitFlag: number;
+}
+
+/** Re-apply signs encoded in rebalance `bitFlag` (SDK on-chain encoding). */
+function signedRebalanceParam(value: number, bitFlag: number, bit: number): number {
+  const mag = Math.abs(value);
+  return (bitFlag & bit) !== 0 ? -mag : mag;
 }
 
 export interface RebalanceRemoveSpec {
@@ -1211,8 +1219,13 @@ function makeTokenBin(
 }
 
 /**
- * Build deposit bins from rebalance add segments. x0/y0/delta_* act as relative
- * weights; results are normalized to the tx's total base/quote amounts.
+ * Build deposit bins from rebalance add segments using Meteora SDK
+ * `toAmountIntoBins` math (with `bitFlag` signs restored):
+ *   bid/Y: y0 + deltaY * (activeId - binId)
+ *   ask/X: (x0 + deltaX * (binId - activeId)) * (1 + binStep/10000)^(-binId)
+ * Absolute X amounts use Q64 inverse price; for relative weights we factor out
+ * the common `base^(-activeId)` so `Math.pow` stays in a safe exponent range.
+ * Results are normalized to the tx's total base/quote amounts.
  */
 function binsFromRebalanceAdds(
   adds: RebalanceAddSpec[],
@@ -1223,29 +1236,29 @@ function binsFromRebalanceAdds(
 ): SimulatedBin[] {
   const baseWeights = new Map<number, number>();
   const quoteWeights = new Map<number, number>();
+  const priceBase = 1 + replay.binStep / 10000;
 
   for (const add of adds) {
+    const x0 = signedRebalanceParam(add.x0, add.bitFlag, 0x1);
+    const y0 = signedRebalanceParam(add.y0, add.bitFlag, 0x2);
+    const deltaX = signedRebalanceParam(add.deltaX, add.bitFlag, 0x4);
+    const deltaY = signedRebalanceParam(add.deltaY, add.bitFlag, 0x8);
     const minBinId = activeBinId + add.minDeltaId;
     const maxBinId = activeBinId + add.maxDeltaId;
     for (let binId = minBinId; binId <= maxBinId; binId++) {
-      const price = getPriceFromId(
-        binId,
-        replay.binStep,
-        replay.baseDecimals,
-        replay.quoteDecimals,
-        replay.applyDecimalAdjustment
-      );
       const onQuoteSide = add.favorXInActiveId
         ? binId < activeBinId
         : binId <= activeBinId;
       if (onQuoteSide) {
-        const weight = Math.max(0, add.y0 + add.deltaY * (activeBinId - binId));
+        // SDK getAmountInBinsBidSide
+        const weight = Math.max(0, y0 + deltaY * (activeBinId - binId));
         quoteWeights.set(binId, (quoteWeights.get(binId) ?? 0) + weight);
       } else {
-        // Use delta as a relative weight (SDK also scales by inverse price for X;
-        // we normalize to total baseAmount afterward).
-        const weight = Math.max(0, add.x0 + add.deltaX * (binId - activeBinId));
-        baseWeights.set(binId, (baseWeights.get(binId) ?? 0) + weight * Math.max(price, 1e-18));
+        // SDK getAmountInBinsAskSide: liq * base^(-binId).
+        // Relative form base^(activeId - binId) avoids underflow for large bin IDs.
+        const liq = Math.max(0, x0 + deltaX * (binId - activeBinId));
+        const weight = liq * Math.pow(priceBase, activeBinId - binId);
+        baseWeights.set(binId, (baseWeights.get(binId) ?? 0) + weight);
       }
     }
   }

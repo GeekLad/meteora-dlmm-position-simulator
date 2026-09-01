@@ -454,11 +454,17 @@ function stackPositionsSequentially(
   };
 }
 
+/**
+ * Within one signature, match on-chain / parser physical order:
+ * create → remove → add → claims → close. Rebalances emit remove then add;
+ * sorting add before remove previously stacked deposits onto inventory that
+ * should already have been withdrawn.
+ */
 function instructionOrder(type: string): number {
   switch (type) {
     case 'CreatePosition': return 0;
-    case 'AddLiquidity': return 1;
-    case 'RemoveLiquidity': return 2;
+    case 'RemoveLiquidity': return 1;
+    case 'AddLiquidity': return 2;
     case 'ClaimFees': return 3;
     case 'ClaimRewards': return 4;
     case 'ClosePosition': return 5;
@@ -889,6 +895,57 @@ export function applyCostBasisToBins(
   }));
 }
 
+/** Adopt live bin inventory while keeping stacked deposit cost basis. */
+export function adoptOnChainShapeWithCost(
+  onChainBins: SimulatedBin[],
+  totalCost: number
+): SimulatedBin[] {
+  if (onChainBins.length === 0) return [];
+  const shaped = onChainBins.map(bin => {
+    const display = bin.currentTokenType === 'quote'
+      ? bin.currentAmount
+      : bin.currentAmount * bin.price;
+    return {
+      ...bin,
+      initialTokenType: bin.currentTokenType,
+      initialAmount: bin.currentAmount,
+      initialDisplayValue: display,
+      initialValueInQuote: bin.currentValueInQuote,
+    };
+  });
+  return applyCostBasisToBins(shaped, totalCost);
+}
+
+const SHAPE_BIN_ABS_VALUE_TOLERANCE = 0.25;
+const SHAPE_BIN_REL_VALUE_TOLERANCE = 0.0025;
+
+function shapeDistributionOk(
+  comparison: ReturnType<typeof compareBinShapes>
+): boolean {
+  // Token-side flips (live SOL vs stacked USDC in the same bin) are never OK.
+  for (const bin of comparison.bins) {
+    const liveSideFlip =
+      (bin.liveBase > 1e-6 && bin.stackedQuote > 1e-6)
+      || (bin.liveQuote > 1e-6 && bin.stackedBase > 1e-6);
+    if (liveSideFlip) return false;
+  }
+  const onChainValue = comparison.bins.reduce(
+    (sum, bin) => sum + bin.liveQuote + bin.liveBase * bin.price,
+    0
+  );
+  const stackedValue = comparison.bins.reduce(
+    (sum, bin) => sum + bin.stackedQuote + bin.stackedBase * bin.price,
+    0
+  );
+  const totalVal = Math.max(onChainValue, stackedValue, 1);
+  const worst = comparison.worstByAbsValue[0];
+  if (worst && Math.abs(worst.dValue) > Math.max(SHAPE_BIN_ABS_VALUE_TOLERANCE, totalVal * 0.001)) {
+    return false;
+  }
+  const sumAbs = comparison.bins.reduce((sum, bin) => sum + Math.abs(bin.dValue), 0);
+  return sumAbs <= Math.max(0.5, totalVal * SHAPE_BIN_REL_VALUE_TOLERANCE);
+}
+
 export function validateStackedShape(
   stackedBins: SimulatedBin[],
   onChainBins: SimulatedBin[],
@@ -918,6 +975,78 @@ export function validateStackedShape(
     onChainBase: onChain.base,
     onChainQuote: onChain.quote,
     message,
+  };
+}
+
+/** Bin-by-bin live vs stacked comparison for diagnosing shape drift. */
+export function compareBinShapes(
+  stackedBins: SimulatedBin[],
+  onChainBins: SimulatedBin[]
+): {
+  stacked: { base: number; quote: number };
+  onChain: { base: number; quote: number };
+  bins: Array<{
+    id: number;
+    price: number;
+    liveBase: number;
+    liveQuote: number;
+    stackedBase: number;
+    stackedQuote: number;
+    dBase: number;
+    dQuote: number;
+    dValue: number;
+  }>;
+  worstByAbsValue: Array<{
+    id: number;
+    price: number;
+    dBase: number;
+    dQuote: number;
+    dValue: number;
+    liveBase: number;
+    liveQuote: number;
+    stackedBase: number;
+    stackedQuote: number;
+  }>;
+} {
+  const amountFor = (bin: SimulatedBin | undefined, side: 'base' | 'quote'): number => {
+    if (!bin) return 0;
+    return bin.currentTokenType === side ? bin.currentAmount : 0;
+  };
+  const liveMap = new Map<number, SimulatedBin>();
+  const stackedMap = new Map<number, SimulatedBin>();
+  for (const bin of onChainBins) liveMap.set(bin.id, bin);
+  for (const bin of stackedBins) stackedMap.set(bin.id, bin);
+  const ids = [...new Set([...liveMap.keys(), ...stackedMap.keys()])].sort((a, b) => a - b);
+  const bins = ids.map(id => {
+    const live = liveMap.get(id);
+    const stacked = stackedMap.get(id);
+    const price = live?.price ?? stacked?.price ?? 0;
+    const liveBase = amountFor(live, 'base');
+    const liveQuote = amountFor(live, 'quote');
+    const stackedBase = amountFor(stacked, 'base');
+    const stackedQuote = amountFor(stacked, 'quote');
+    const dBase = stackedBase - liveBase;
+    const dQuote = stackedQuote - liveQuote;
+    return {
+      id,
+      price,
+      liveBase,
+      liveQuote,
+      stackedBase,
+      stackedQuote,
+      dBase,
+      dQuote,
+      dValue: dQuote + dBase * price,
+    };
+  });
+  const worstByAbsValue = [...bins]
+    .sort((a, b) => Math.abs(b.dValue) - Math.abs(a.dValue))
+    .slice(0, 25);
+  return {
+    stacked: binsToAmounts(stackedBins, true),
+    onChain: binsToAmounts(onChainBins, true),
+    bins,
+    worstByAbsValue,
   };
 }
 
@@ -1023,47 +1152,75 @@ export async function loadPositionHistory(
   let finalCombined = combinedBins;
   let reconciledToOnChain = false;
 
-  // Sequential stack is the displayed shape. If live totals differ slightly
-  // (fees, dust), scale current inventory to match live token totals without
-  // replacing the stacked distribution.
-  if (
-    !shapeValidation.totalsOk
-    && onChainForValidation.length > 0
+  const distribution = stackedAtCurrent.length && onChainForValidation.length
+    ? compareBinShapes(stackedAtCurrent, onChainForValidation)
+    : null;
+
+  // Prefer live on-chain bin shares when the stack diverges on totals or
+  // per-bin weights; keep historical deposit cost for entry / P&L.
+  const shouldAdoptOnChainShape =
+    onChainForValidation.length > 0
     && historicalSlices.length > 0
     && (shapeValidation.onChainBase > 0 || shapeValidation.onChainQuote > 0)
-  ) {
-    const baseScale = shapeValidation.stackedBase > 1e-12
-      ? shapeValidation.onChainBase / shapeValidation.stackedBase
-      : 1;
-    const quoteScale = shapeValidation.stackedQuote > 1e-12
-      ? shapeValidation.onChainQuote / shapeValidation.stackedQuote
-      : 1;
-    const scaleInventory = (bins: SimulatedBin[]): SimulatedBin[] => bins.map(bin => {
-      const scale = bin.currentTokenType === 'base' ? baseScale : quoteScale;
-      if (Math.abs(scale - 1) < 1e-12) return bin;
+    && (
+      !shapeValidation.totalsOk
+      || (distribution != null && !shapeDistributionOk(distribution))
+    );
+
+  if (shouldAdoptOnChainShape) {
+    const costByPosition = new Map<string, number>();
+    for (const slice of historicalSlices) {
+      costByPosition.set(
+        slice.positionAddress,
+        (costByPosition.get(slice.positionAddress) ?? 0) + costBasis(slice.bins, slice.scale)
+      );
+    }
+    const totalStackedCost = [...costByPosition.values()].reduce((sum, value) => sum + value, 0);
+
+    finalPositionBins = {};
+    for (const address of positionAddresses) {
+      const live = onChainByPosition[address] ?? [];
+      const cost = costByPosition.get(address) ?? 0;
+      finalPositionBins[address] = live.length
+        ? adoptOnChainShapeWithCost(live, cost)
+        : (positionBins[address] ?? []);
+    }
+
+    const adoptedCombined = onChainCombined.length
+      ? adoptOnChainShapeWithCost(onChainCombined, totalStackedCost)
+      : adoptOnChainShapeWithCost(onChainForValidation, totalStackedCost);
+
+    finalSlices = historicalSlices.map(slice => {
+      const live = finalPositionBins[slice.positionAddress] ?? [];
+      if (live.length === 0) return slice;
       return {
-        ...bin,
-        currentAmount: bin.currentAmount * scale,
-        currentValueInQuote: bin.currentValueInQuote * scale,
-        initialAmount: bin.initialAmount * scale,
-        initialDisplayValue: bin.initialDisplayValue * scale,
+        ...slice,
+        bins: live,
+        minPrice: live[0]?.price ?? slice.minPrice,
+        maxPrice: live[live.length - 1]?.price ?? slice.maxPrice,
+        lowerBinId: live[0]?.id ?? slice.lowerBinId,
+        upperBinId: live[live.length - 1]?.id ?? slice.upperBinId,
       };
     });
-    finalSlices = historicalSlices.map(slice => ({
-      ...slice,
-      bins: scaleInventory(slice.bins),
-    }));
-    finalPositionBins = binsByPosition(finalSlices, replay);
-    finalCombined = combineSliceBins(finalSlices, {
-      ...replay,
-      activeBinId: currentActiveBinId || sequential.initialActiveBinId,
-    });
+    finalCombined = adoptedCombined;
     reconciledToOnChain = true;
+
+    const before = distribution;
+    const baseScale = before && before.stacked.base > 1e-12
+      ? before.onChain.base / before.stacked.base
+      : 1;
+    const quoteScale = before && before.stacked.quote > 1e-12
+      ? before.onChain.quote / before.stacked.quote
+      : 1;
     shapeValidation = {
       ...shapeValidation,
       ok: true,
       totalsOk: true,
-      message: `Stacked history aligned to live token totals (base ×${baseScale.toFixed(4)}, quote ×${quoteScale.toFixed(4)}).`,
+      stackedBase: shapeValidation.onChainBase,
+      stackedQuote: shapeValidation.onChainQuote,
+      message: shapeValidation.totalsOk
+        ? 'Stacked history cost kept; live on-chain bin shares used for shape.'
+        : `Stacked history aligned to live bin shares (base ×${baseScale.toFixed(4)}, quote ×${quoteScale.toFixed(4)}).`,
     };
   }
 
