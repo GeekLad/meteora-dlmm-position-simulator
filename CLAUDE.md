@@ -38,7 +38,11 @@ The heart of the application implements the DLMM bin-based liquidity model:
 
 ### Wallet Positions (`src/lib/wallet-positions.ts`)
 
-Loads a wallet's open DLMM positions from the public Meteora Data API (`/portfolio/open` + `/positions/{pool}/pnl`), groups them by pair then pool, and reconstructs a combined bin distribution for price simulation. No Solana RPC required.
+Loads a wallet's open DLMM positions from the public Meteora Data API (`/portfolio/open` + `/positions/{pool}/pnl`), groups them by pair then pool, and reconstructs a combined bin distribution for price simulation. On-chain bin shares are preferred for live shape.
+
+### Position History (`src/lib/position-history.ts`)
+
+For open positions in a selected pool, loads transaction history via Meteora `GET /positions/{address}/historical`, fetches each signature with Solana RPC, and parses instructions with `@geeklad/meteora-dlmm-liquidity-tx-parser` (^1.1.0). Historical and simulated actions share one `SimulatedTransaction` shape (`source: 'historical' | 'simulated'`) and are stacked by `stackLiquidityTransactions` (convert inventory to that tx's price, then add/remove). Deposit shape prefers, in order: explicit `bins[]`, rebalance `adds[]` (`x0`/`y0`/`delta_*` as weights normalized to totals), then strategy (`Spot`/`Curve`/`BidAsk`) over the range. They appear together in the transaction log (historical rows are read-only). Entry price and cost basis come from that history; claimed fees feed realized P&L. Parsed txs are stored in a versioned IndexedDB cache (`HISTORY_CACHE_VERSION` in `src/lib/tx-cache.ts` — bump it to force every client to refetch). Optional RPC override: `NEXT_PUBLIC_SOLANA_RPC_URL` or `localStorage.solanaRpcUrl`.
 
 
 ### Main Component (`src/components/dlmm-simulator.tsx`)

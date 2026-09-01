@@ -19,10 +19,13 @@ import {
   findBreakevenBaseAmount,
   findBreakevenMaxPrice,
   formatRealizedPnl,
+  isHistoricalTx,
+  isSimulatedTx,
   measureRemoval,
   newSimulatedPositionAddress,
   newTxId,
   replayTransactions,
+  stackLiquidityTransactions,
   summarizeTransactionEconomics,
   type LiquiditySlice,
   type ReplayOptions,
@@ -65,6 +68,9 @@ interface PositionChangesProps {
   poolStartPrice?: number | null;
   emptyHint?: string;
   showRestore?: boolean;
+  /** When true, entry price came from on-chain deposit history — skip the set-initial-price prompt. */
+  entryPriceFromHistory?: boolean;
+  historyStatusMessage?: string | null;
 }
 
 const DUST = 1e-9;
@@ -138,6 +144,8 @@ export function PositionChanges({
   poolStartPrice = null,
   emptyHint,
   showRestore = true,
+  entryPriceFromHistory = false,
+  historyStatusMessage = null,
 }: PositionChangesProps) {
   const [activeForm, setActiveForm] = useState<SimulatedTxType | null>(
     () => (positions.length === 0 ? 'add-position' : null)
@@ -534,15 +542,27 @@ export function PositionChanges({
     removePct,
   ]);
 
+  const unifiedStack = useMemo(() => {
+    if (!replayOptions) return null;
+    if (transactions.some(isHistoricalTx)) {
+      return stackLiquidityTransactions(transactions, replayOptions, currentPrice);
+    }
+    return null;
+  }, [replayOptions, transactions, currentPrice]);
+
   const txLedger = useMemo(() => {
     if (!replayOptions) return null;
+    if (unifiedStack) {
+      return summarizeTransactionEconomics([], unifiedStack.transactions, replayOptions);
+    }
     return summarizeTransactionEconomics(baseSlices, transactions, replayOptions);
-  }, [replayOptions, baseSlices, transactions]);
+  }, [replayOptions, baseSlices, transactions, unifiedStack]);
 
   const walletSlices = useMemo(() => {
     if (!replayOptions) return [];
+    if (unifiedStack) return unifiedStack.slices;
     return replayTransactions(baseSlices, transactions, replayOptions);
-  }, [replayOptions, baseSlices, transactions]);
+  }, [replayOptions, baseSlices, transactions, unifiedStack]);
 
   const isDepositForm = activeForm === 'add-position' || activeForm === 'add-liquidity';
 
@@ -825,6 +845,7 @@ export function PositionChanges({
   };
 
   const editTx = (tx: SimulatedTransaction) => {
+    if (isHistoricalTx(tx)) return;
     setPositionAddress(tx.positionAddress);
     setStrategy(tx.strategy);
     setBaseAmount(tx.baseAmount ? String(tx.baseAmount) : '');
@@ -1230,7 +1251,7 @@ export function PositionChanges({
                   size="sm"
                   className="h-8"
                   onClick={onRestore}
-                  disabled={transactions.length === 0}
+                  disabled={!transactions.some(isSimulatedTx)}
                 >
                   <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
                   Restore original
@@ -1239,10 +1260,21 @@ export function PositionChanges({
             </div>
           </div>
 
-          {showRestore && transactions.length === 0 && (
+          {showRestore && !transactions.some(isSimulatedTx) && !entryPriceFromHistory && (
             <p className="rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs leading-snug">
               <span className="font-semibold">Set the initial price</span>
               {' '}on the Analysis chart. It is the cost basis for these loaded wallet positions and locks after the first simulated transaction.
+            </p>
+          )}
+
+          {showRestore && historyStatusMessage && (
+            <p className={cn(
+              'rounded-md border px-3 py-2 text-xs leading-snug',
+              entryPriceFromHistory
+                ? 'border-border/60 bg-muted/40 text-muted-foreground'
+                : 'border-amber-500/40 bg-amber-500/10 text-amber-950 dark:text-amber-200'
+            )}>
+              {historyStatusMessage}
             </p>
           )}
 
@@ -1343,18 +1375,22 @@ export function PositionChanges({
 
           {transactions.length > 0 && (
             <div className="space-y-2 border-t border-border/50 pt-3">
-              <div className="text-sm font-medium">Simulated transaction log</div>
+              <div className="text-sm font-medium">Transaction log</div>
               <div className="space-y-2">
                 {transactions.map((tx, index) => {
                   const economics = txLedger?.perTx[index];
                   const realized = economics?.realizedPnl ?? 0;
+                  const historical = isHistoricalTx(tx);
                   return (
                   <div key={tx.id} className="rounded-md border bg-secondary/30 p-2 text-xs">
                     <div className="flex items-start justify-between gap-2">
                       <div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <Badge variant="outline" className="font-normal">#{index + 1}</Badge>
                           <span className="font-medium capitalize">{tx.type.replace('-', ' ')}</span>
+                          {historical && (
+                            <Badge variant="secondary" className="font-normal">on-chain</Badge>
+                          )}
                         </div>
                         <p className="mt-1 text-muted-foreground">
                           {describeTransaction(tx, tokenSymbols)}
@@ -1369,16 +1405,19 @@ export function PositionChanges({
                         )}
                         <p className="mt-0.5 font-mono text-muted-foreground">
                           {txPositionLabel(tx.positionAddress)}
+                          {historical && tx.signature ? ` · ${tx.signature.slice(0, 8)}…` : ''}
                         </p>
                       </div>
-                      <div className="flex shrink-0 gap-1">
-                        <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={() => editTx(tx)}>
-                          <Pencil className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={() => onRemoveTx(tx.id)}>
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
+                      {!historical && (
+                        <div className="flex shrink-0 gap-1">
+                          <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={() => editTx(tx)}>
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={() => onRemoveTx(tx.id)}>
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   </div>
                   );

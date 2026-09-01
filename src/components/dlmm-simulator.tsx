@@ -30,12 +30,15 @@ import {
   type WalletPoolSummary,
   type WalletPositionDetail,
 } from "@/lib/wallet-positions";
+import type { LoadedPositionHistory } from "@/lib/position-history";
 import {
   analyzeCurrentBins,
   binsToAmounts,
   combineSliceBins,
   findBreakevenPrice,
   FORM_SEED_POSITION_ADDRESS,
+  isHistoricalTx,
+  isSimulatedTx,
   originalSlices,
   positionsFromSlices,
   removeTransaction,
@@ -44,7 +47,9 @@ import {
   simulateSlices,
   simulatedPositionDetail,
   slicesCostBasis,
+  stackLiquidityTransactions,
   summarizeTransactionEconomics,
+  type LiquiditySlice,
   type SimulatedTransaction,
 } from "@/lib/position-transactions";
 import { hasShareOverlay, hasShareTarget, parseShareSearchParams } from "@/lib/share-state";
@@ -165,6 +170,8 @@ export function DlmmSimulator() {
   const [originalPositionBins, setOriginalPositionBins] = useState<Record<string, SimulatedBin[]>>({});
   const [originalInitialPrice, setOriginalInitialPrice] = useState<number | null>(null);
   const [poolStartPrice, setPoolStartPrice] = useState<number | null>(null);
+  const [walletHistory, setWalletHistory] = useState<LoadedPositionHistory | null>(null);
+  const [historicalSlices, setHistoricalSlices] = useState<LiquiditySlice[]>([]);
   const [simulatedTxs, setSimulatedTxs] = useState<SimulatedTransaction[]>([]);
   const [changeFocus, setChangeFocus] = useState<ChangeFocus | null>(null);
   const [mobileSection, setMobileSection] = useState<MobileSection>('position');
@@ -201,40 +208,82 @@ export function DlmmSimulator() {
   }, [params, baseDecimals, quoteDecimals, applyDecimalAdjustment]);
 
   const firstTxPrice = simulatedTxs[0]?.price;
+  const historyLocksInitialPrice = Boolean(
+    historicalSlices.length > 0
+    && walletHistory
+    && walletHistory.initialPrice > 0
+  );
   const costBasisPrice =
     typeof params.initialPrice === 'number' && params.initialPrice > 0
       ? params.initialPrice
       : originalInitialPrice;
   const walletReplay = useMemo(() => {
     if (typeof params.binStep !== 'number') return null;
-    if (originalWalletPositions.length === 0 && simulatedTxs.length === 0) return null;
-    // Reconstruction stays on the loaded pool composition so dragging the
-    // initial-price handle only changes cost basis, not bin shape.
+    if (originalWalletPositions.length === 0 && simulatedTxs.length === 0 && historicalSlices.length === 0) {
+      return null;
+    }
+    // Prefer the first-deposit active bin from history so cost basis stays fixed
+    // while the chart still simulates to the dragged current price.
+    const historyActive = walletHistory?.initialActiveBinId;
     const replayPrice = originalInitialPrice ?? firstTxPrice ?? 0;
     return {
       binStep: params.binStep,
       baseDecimals,
       quoteDecimals,
       applyDecimalAdjustment,
-      activeBinId: replayPrice
-        ? getIdFromPrice(replayPrice, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment)
-        : 0,
+      activeBinId: historyActive && historyActive > 0
+        ? historyActive
+        : (replayPrice
+            ? getIdFromPrice(replayPrice, params.binStep, baseDecimals, quoteDecimals, applyDecimalAdjustment)
+            : 0),
     };
-  }, [params.binStep, originalInitialPrice, firstTxPrice, simulatedTxs.length, baseDecimals, quoteDecimals, applyDecimalAdjustment, originalWalletPositions.length]);
+  }, [
+    params.binStep,
+    originalInitialPrice,
+    firstTxPrice,
+    simulatedTxs.length,
+    baseDecimals,
+    quoteDecimals,
+    applyDecimalAdjustment,
+    originalWalletPositions.length,
+    historicalSlices.length,
+    walletHistory?.initialActiveBinId,
+  ]);
+
+  const hasHistoricalTxs = simulatedTxs.some(isHistoricalTx);
+  const currentPriceNumber = typeof currentPrice === 'number' ? currentPrice : 0;
 
   const baseSlices = useMemo(() => {
     if (!walletReplay) return [];
+    // Unified log: historical txs live in simulatedTxs and stack from empty.
+    // Only use snapshot slices when there is no historical tx list yet.
+    if (hasHistoricalTxs) return [];
+    if (historicalSlices.length > 0) return historicalSlices;
     if (originalWalletPositions.length && costBasisPrice != null) {
       return originalSlices(originalWalletPositions, originalPositionBins, costBasisPrice);
     }
     return [];
-  }, [walletReplay, originalWalletPositions, originalPositionBins, costBasisPrice]);
+  }, [
+    walletReplay,
+    hasHistoricalTxs,
+    historicalSlices,
+    originalWalletPositions,
+    originalPositionBins,
+    costBasisPrice,
+  ]);
 
   const walletSlices = useMemo(() => {
     if (!walletReplay) return [];
-    if (baseSlices.length === 0 && simulatedTxs.length === 0) return [];
-    return replayTransactions(baseSlices, simulatedTxs, walletReplay);
-  }, [walletReplay, baseSlices, simulatedTxs]);
+    if (simulatedTxs.length > 0) {
+      return stackLiquidityTransactions(
+        simulatedTxs,
+        walletReplay,
+        currentPriceNumber || walletHistory?.initialPrice || 0
+      ).slices;
+    }
+    if (baseSlices.length === 0) return [];
+    return replayTransactions(baseSlices, [], walletReplay);
+  }, [walletReplay, baseSlices, simulatedTxs, currentPriceNumber, walletHistory?.initialPrice]);
 
   useEffect(() => {
     if (walletSlices.length && walletReplay) {
@@ -294,6 +343,8 @@ export function DlmmSimulator() {
     setOriginalWalletPositions([]);
     setOriginalPositionBins({});
     setOriginalInitialPrice(null);
+    setWalletHistory(null);
+    setHistoricalSlices([]);
   }, [walletBins, simulatedTxs.length, originalWalletPositions.length]);
 
   useEffect(() => {
@@ -360,6 +411,8 @@ export function DlmmSimulator() {
     setOriginalWalletPositions([]);
     setOriginalPositionBins({});
     setOriginalInitialPrice(null);
+    setWalletHistory(null);
+    setHistoricalSlices([]);
     setPoolStartPrice(null);
     setSimulatedTxs([]);
     setChangeFocus(null);
@@ -373,7 +426,7 @@ export function DlmmSimulator() {
   };
   
   const handleInitialPriceChange = (newInitialPrice: number) => {
-    if (simulatedTxs.length > 0) return;
+    if (simulatedTxs.length > 0 || historyLocksInitialPrice) return;
     setParams(prev => (prev.initialPrice === newInitialPrice ? prev : { ...prev, initialPrice: newInitialPrice }));
   }
 
@@ -411,12 +464,14 @@ export function DlmmSimulator() {
   }
 
   const applySimulatedTx = (tx: SimulatedTransaction) => {
+    const nextTx: SimulatedTransaction = { ...tx, source: tx.source ?? 'simulated' };
     if (
       !walletBins
       && originalWalletPositions.length === 0
-      && simulatedTxs.length === 0
+      && simulatedTxs.filter(isSimulatedTx).length === 0
+      && !hasHistoricalTxs
       && simulationParams
-      && tx.type !== 'add-position'
+      && nextTx.type !== 'add-position'
     ) {
       const bins = getInitialBins(simulationParams);
       if (bins.length) {
@@ -433,8 +488,8 @@ export function DlmmSimulator() {
         setOriginalWalletPositions([seed]);
         setOriginalPositionBins({ [FORM_SEED_POSITION_ADDRESS]: bins });
         setOriginalInitialPrice(simulationParams.initialPrice);
-        if (!tx.positionAddress || tx.positionAddress === FORM_SEED_POSITION_ADDRESS) {
-          tx = { ...tx, positionAddress: tx.positionAddress || FORM_SEED_POSITION_ADDRESS };
+        if (!nextTx.positionAddress || nextTx.positionAddress === FORM_SEED_POSITION_ADDRESS) {
+          nextTx.positionAddress = nextTx.positionAddress || FORM_SEED_POSITION_ADDRESS;
         }
       }
     }
@@ -442,10 +497,11 @@ export function DlmmSimulator() {
       setOriginalInitialPrice(params.initialPrice);
     }
     setSimulatedTxs(prev => {
-      const index = prev.findIndex(item => item.id === tx.id);
-      if (index === -1) return [...prev, tx];
+      const index = prev.findIndex(item => item.id === nextTx.id);
+      if (index === -1) return [...prev, nextTx];
+      if (isHistoricalTx(prev[index])) return prev;
       const next = [...prev];
-      next[index] = tx;
+      next[index] = nextTx;
       return next;
     });
     setMobileSection('analysis');
@@ -453,21 +509,29 @@ export function DlmmSimulator() {
   };
 
   const dropSimulatedTx = (id: string) => {
-    setSimulatedTxs(prev => removeTransaction(prev, id));
+    setSimulatedTxs(prev => {
+      const target = prev.find(tx => tx.id === id);
+      if (target && isHistoricalTx(target)) return prev;
+      return removeTransaction(prev, id);
+    });
   };
 
   const deleteSimulatedPosition = (positionAddress: string) => {
-    setSimulatedTxs(prev => removeSimulatedPosition(prev, positionAddress));
+    // Never drop on-chain history — only remove simulated txs for this address.
+    setSimulatedTxs(prev =>
+      prev.filter(tx => isHistoricalTx(tx) || tx.positionAddress !== positionAddress)
+    );
     setChangeFocus(prev => (prev?.positionAddress === positionAddress ? null : prev));
   };
 
   const restoreOriginalPositions = () => {
     const wasWallet = !!walletBins;
-    setSimulatedTxs([]);
+    // Keep on-chain history; drop only user-simulated overlays.
+    setSimulatedTxs(prev => prev.filter(isHistoricalTx));
     setChangeFocus(null);
     if (wasWallet) {
       if (originalInitialPrice != null) {
-        setCurrentPrice(originalInitialPrice);
+        setCurrentPrice(poolStartPrice ?? originalInitialPrice);
         setParams(prev => ({ ...prev, initialPrice: originalInitialPrice }));
       }
       return;
@@ -490,6 +554,8 @@ export function DlmmSimulator() {
     setOriginalWalletPositions([]);
     setOriginalPositionBins({});
     setOriginalInitialPrice(null);
+    setWalletHistory(null);
+    setHistoricalSlices([]);
     setWalletPositions([]);
   };
 
@@ -499,6 +565,8 @@ export function DlmmSimulator() {
     setOriginalWalletPositions([]);
     setOriginalPositionBins({});
     setOriginalInitialPrice(null);
+    setWalletHistory(null);
+    setHistoricalSlices([]);
     setPoolStartPrice(null);
     if (!shareOverlayAppliedRef.current) {
       setSimulatedTxs([]);
@@ -650,14 +718,39 @@ export function DlmmSimulator() {
             fallbackActiveBinId: loaded.activeBinId,
           });
 
+      const history = loaded.history;
+      // When pool mint decimals are known, always apply decimal adjustment for
+      // entry-price conversion — reverse-engineering against a 0 API price can
+      // flip the flag and show lamport prices on the chart.
+      if (pool.decimals_x != null && pool.decimals_y != null) {
+        decimalAdjustment = true;
+      }
+
       const activeBinId = loaded.activeBinId;
       const reconstructedPrice = activeBinId
         ? getPriceFromId(activeBinId, pool.bin_step, poolBaseDecimals, poolQuoteDecimals, decimalAdjustment)
         : 0;
-      const exactBinPrice =
+      const poolActivePrice =
         Number.isFinite(reconstructedPrice) && reconstructedPrice > 0
           ? reconstructedPrice
           : (loaded.activePrice || pool.current_price);
+
+      const historyInitialFromBin =
+        history && history.initialActiveBinId > 0
+          ? getPriceFromId(
+              history.initialActiveBinId,
+              pool.bin_step || payload.pool.binStep,
+              poolBaseDecimals,
+              poolQuoteDecimals,
+              decimalAdjustment
+            )
+          : 0;
+      const historyInitial =
+        loaded.useHistoricalShape && history
+          ? (historyInitialFromBin > 0 ? historyInitialFromBin : history.initialPrice)
+          : null;
+      const costBasisInitial =
+        historyInitial && historyInitial > 0 ? historyInitial : poolActivePrice;
 
       setSelectedPool(pool);
       setBaseDecimals(poolBaseDecimals);
@@ -667,24 +760,42 @@ export function DlmmSimulator() {
       setWalletPositions(loaded.positions);
       setOriginalWalletPositions(loaded.positions);
       setOriginalPositionBins(loaded.positionBins);
-      setOriginalInitialPrice(exactBinPrice);
-      setPoolStartPrice(exactBinPrice);
+      setWalletHistory(history);
+      setHistoricalSlices(
+        loaded.useHistoricalShape && history ? history.historicalSlices : []
+      );
+      setOriginalInitialPrice(costBasisInitial);
+      setPoolStartPrice(poolActivePrice);
+      // Seed the unified tx log with on-chain history; share overlays append after.
+      const historicalTxs = (history?.stackedTxs ?? []).map(tx => ({
+        ...tx,
+        source: 'historical' as const,
+      }));
       if (!shareOverlayAppliedRef.current) {
-        setSimulatedTxs([]);
+        setSimulatedTxs(historicalTxs);
+      } else {
+        setSimulatedTxs(prev => [
+          ...historicalTxs,
+          ...prev.filter(isSimulatedTx),
+        ]);
       }
       setWalletBins(bins.length ? bins : loaded.bins);
       setMobileSection('analysis');
       setParams({
         strategy: 'spot',
         binStep: pool.bin_step || payload.pool.binStep,
-        initialPrice: exactBinPrice,
+        initialPrice: costBasisInitial,
         baseAmount: loaded.combinedBaseAmount,
         quoteAmount: loaded.combinedQuoteAmount,
-        lowerPrice: loaded.combinedLowerPrice || (bins[0]?.price ?? exactBinPrice),
-        upperPrice: loaded.combinedUpperPrice || (bins[bins.length - 1]?.price ?? exactBinPrice),
+        lowerPrice: loaded.combinedLowerPrice || (bins[0]?.price ?? poolActivePrice),
+        upperPrice: loaded.combinedUpperPrice || (bins[bins.length - 1]?.price ?? poolActivePrice),
       });
-      setCurrentPrice(exactBinPrice);
+      // Start the scrubber at the live pool price; cost basis comes from history.
+      setCurrentPrice(poolActivePrice);
       applyShareOverlay(pool.address);
+      if (history && !history.shapeValidation.ok && history.stackedTxs.length > 0) {
+        console.warn(history.shapeValidation.message, history.shapeValidation);
+      }
       return null;
     } catch (error) {
       setWalletBins(null);
@@ -692,6 +803,8 @@ export function DlmmSimulator() {
       setOriginalWalletPositions([]);
       setOriginalPositionBins({});
       setOriginalInitialPrice(null);
+      setWalletHistory(null);
+      setHistoricalSlices([]);
       setSimulatedTxs([]);
       const message = error instanceof Error ? error.message : 'Failed to load pool positions';
       setWalletPoolError(message);
@@ -840,17 +953,34 @@ export function DlmmSimulator() {
 
   const txLedger = useMemo(() => {
     if (!walletReplay) return null;
+    if (hasHistoricalTxs) {
+      const stacked = stackLiquidityTransactions(
+        simulatedTxs,
+        walletReplay,
+        currentPriceNumber || walletHistory?.initialPrice || 0
+      );
+      return summarizeTransactionEconomics([], stacked.transactions, walletReplay);
+    }
     return summarizeTransactionEconomics(baseSlices, simulatedTxs, walletReplay);
-  }, [walletReplay, baseSlices, simulatedTxs]);
+  }, [
+    walletReplay,
+    baseSlices,
+    simulatedTxs,
+    hasHistoricalTxs,
+    currentPriceNumber,
+    walletHistory?.initialPrice,
+  ]);
 
   const remainingCost = useMemo(() => {
     if (typeof params.initialPrice !== 'number') {
       return walletSlices.length ? slicesCostBasis(walletSlices) : 0;
     }
     const startPrice = params.initialPrice;
-    // Same price as now with no simulated txs → same LP value, so P&L is exactly 0.
+    // With real deposit history, cost basis comes from stacked txs — never
+    // force it equal to mark-to-market just because price matches initial.
     if (
-      simulatedTxs.length === 0
+      !historyLocksInitialPrice
+      && simulatedTxs.length === 0
       && analysis
       && typeof currentPrice === 'number'
       && Math.abs(currentPrice - startPrice) < 1e-9
@@ -860,9 +990,26 @@ export function DlmmSimulator() {
     if (walletSlices.length) return slicesCostBasis(walletSlices);
     if (!initialBins.length) return 0;
     return runSimulation(initialBins, startPrice, startPrice).analysis.totalValueInQuote;
-  }, [walletSlices, params.initialPrice, simulatedTxs.length, analysis, currentPrice, initialBins]);
+  }, [
+    walletSlices,
+    params.initialPrice,
+    simulatedTxs.length,
+    analysis,
+    currentPrice,
+    initialBins,
+    historyLocksInitialPrice,
+  ]);
 
-  const realizedPnl = txLedger?.realizedPnl ?? 0;
+  const claimedFeeValue = useMemo(() => {
+    const fees = walletHistory?.claimedFees;
+    if (!fees) return 0;
+    const price = typeof currentPrice === 'number' && currentPrice > 0
+      ? currentPrice
+      : (typeof params.initialPrice === 'number' ? params.initialPrice : 0);
+    return fees.quote + fees.base * (price > 0 ? price : 0);
+  }, [walletHistory?.claimedFees, currentPrice, params.initialPrice]);
+
+  const realizedPnl = (txLedger?.realizedPnl ?? 0) + claimedFeeValue;
   // Fresh capital the user put in: every deposit minus the value of tokens
   // redeposited from earlier removals (those move pocketed cash, not new
   // money). Withdrawals never reduce it — the withdrawn tokens still belong
@@ -870,11 +1017,10 @@ export function DlmmSimulator() {
   const netInvestment = txLedger
     ? txLedger.deposits - txLedger.reinvestedValue
     : remainingCost;
-  // Withdrawn funds not yet redeployed. Part of the portfolio: the user
-  // still owns them, they just sit outside any position.
-  const pocketedCash = txLedger
+  // Withdrawn funds not yet redeployed, plus claimed fees/rewards.
+  const pocketedCash = (txLedger
     ? txLedger.withdrawals - txLedger.reinvestedValue
-    : 0;
+    : 0) + claimedFeeValue;
   // Everything the user owns right now: open positions plus pocketed cash.
   const portfolioValue = (analysis?.totalValueInQuote ?? 0) + pocketedCash;
 
@@ -1182,6 +1328,30 @@ export function DlmmSimulator() {
                   onInitialPriceChange={handleCreatePositionPriceChange}
                   poolStartPrice={poolStartPrice}
                   showRestore={!!walletBins}
+                  entryPriceFromHistory={historyLocksInitialPrice}
+                  historyStatusMessage={(() => {
+                    if (!walletHistory) return null;
+                    const missing = walletHistory.missingSignatures.length;
+                    const loaded = walletHistory.stackedTxs.length;
+                    if (loaded <= 0 && missing > 0) {
+                      return `Could not fetch historical transactions from Solana RPC (${missing} signature${missing === 1 ? '' : 's'}). Set the initial price manually for cost basis.`;
+                    }
+                    if (loaded <= 0) return null;
+                    const parts = [
+                      `Loaded ${loaded} historical liquidity tx${loaded === 1 ? '' : 's'}; entry price from first deposit.`,
+                      walletHistory.reconciledToOnChain
+                        ? (walletHistory.shapeValidation.message || 'Stacked history aligned to live totals.')
+                        : (walletHistory.shapeValidation.ok
+                            ? 'Stacked shape matches on-chain.'
+                            : walletHistory.shapeValidation.message),
+                    ];
+                    if (missing > 0) {
+                      parts.push(
+                        `${missing} signature${missing === 1 ? '' : 's'} still missing after retries (rate limit or pruned RPC history); cost basis may be slightly incomplete.`
+                      );
+                    }
+                    return parts.filter(Boolean).join(' ');
+                  })()}
                   emptyHint="No positions yet. Create one to start the simulation."
                 />
               </CardContent>
@@ -1322,9 +1492,11 @@ export function DlmmSimulator() {
                     strategy={params.strategy}
                     onCurrentPriceChange={handleCurrentPriceChange}
                     onInitialPriceChange={handleInitialPriceChange}
-                    initialPriceLocked={simulatedTxs.length > 0}
-                    initialPriceLabel="Initial Price"
-                    promptSetInitialPrice={!!walletBins && simulatedTxs.length === 0}
+                    initialPriceLocked={simulatedTxs.length > 0 || historyLocksInitialPrice}
+                    initialPriceLabel={historyLocksInitialPrice ? 'Entry Price' : 'Initial Price'}
+                    promptSetInitialPrice={
+                      !!walletBins && simulatedTxs.length === 0 && !historyLocksInitialPrice
+                    }
                   />
                 ) : (
                   <div className="flex items-center justify-center h-full text-muted-foreground">
